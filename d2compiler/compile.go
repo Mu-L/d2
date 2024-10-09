@@ -3,6 +3,7 @@ package d2compiler
 import (
 	"encoding/xml"
 	"fmt"
+	"html"
 	"io"
 	"io/fs"
 	"net/url"
@@ -271,7 +272,7 @@ func (c *compiler) compileMap(obj *d2graph.Object, m *d2ir.Map) {
 		if f.Name == "shape" {
 			continue
 		}
-		if _, ok := d2graph.BoardKeywords[f.Name]; ok {
+		if _, ok := d2ast.BoardKeywords[f.Name]; ok {
 			continue
 		}
 		c.compileField(obj, f)
@@ -293,12 +294,12 @@ func (c *compiler) compileMap(obj *d2graph.Object, m *d2ir.Map) {
 
 func (c *compiler) compileField(obj *d2graph.Object, f *d2ir.Field) {
 	keyword := strings.ToLower(f.Name)
-	_, isStyleReserved := d2graph.StyleKeywords[keyword]
+	_, isStyleReserved := d2ast.StyleKeywords[keyword]
 	if isStyleReserved {
 		c.errorf(f.LastRef().AST(), "%v must be style.%v", f.Name, f.Name)
 		return
 	}
-	_, isReserved := d2graph.SimpleReservedKeywords[keyword]
+	_, isReserved := d2ast.SimpleReservedKeywords[keyword]
 	if f.Name == "classes" {
 		if f.Map() != nil {
 			if len(f.Map().Edges) > 0 {
@@ -309,7 +310,7 @@ func (c *compiler) compileField(obj *d2graph.Object, f *d2ir.Field) {
 					continue
 				}
 				for _, cf := range classesField.Map().Fields {
-					if _, ok := d2graph.ReservedKeywords[cf.Name]; !ok {
+					if _, ok := d2ast.ReservedKeywords[cf.Name]; !ok {
 						c.errorf(cf.LastRef().AST(), "%s is an invalid class field, must be reserved keyword", cf.Name)
 					}
 					if cf.Name == "class" {
@@ -351,6 +352,7 @@ func (c *compiler) compileField(obj *d2graph.Object, f *d2ir.Field) {
 		}
 	}
 
+	parent := obj
 	obj = obj.EnsureChild(d2graphIDA([]string{f.Name}))
 	if f.Primary() != nil {
 		c.compileLabel(&obj.Attributes, f)
@@ -376,6 +378,8 @@ func (c *compiler) compileField(obj *d2graph.Object, f *d2ir.Field) {
 			MapKeyEdgeIndex: fr.Context_.EdgeIndex(),
 			Scope:           fr.Context_.Scope,
 			ScopeAST:        fr.Context_.ScopeAST,
+			ScopeObj:        parent,
+			IsVar:           d2ir.IsVar(fr.Context_.ScopeMap),
 		}
 		if fr.Context_.ScopeMap != nil && !d2ir.IsVar(fr.Context_.ScopeMap) {
 			scopeObjIDA := d2graphIDA(d2ir.BoardIDA(fr.Context_.ScopeMap))
@@ -440,7 +444,7 @@ func (c *compiler) compilePosition(attrs *d2graph.Attributes, f *d2ir.Field) {
 					case *d2ast.Null:
 						attrs.LabelPosition = nil
 					default:
-						if _, ok := d2graph.LabelPositions[scalar.ScalarString()]; !ok {
+						if _, ok := d2ast.LabelPositions[scalar.ScalarString()]; !ok {
 							c.errorf(f.LastPrimaryKey(), `invalid "near" field`)
 						} else {
 							switch name {
@@ -686,7 +690,7 @@ func (c *compiler) compileStyle(attrs *d2graph.Attributes, m *d2ir.Map) {
 }
 
 func (c *compiler) compileStyleField(attrs *d2graph.Attributes, f *d2ir.Field) {
-	if _, ok := d2graph.StyleKeywords[strings.ToLower(f.Name)]; !ok {
+	if _, ok := d2ast.StyleKeywords[strings.ToLower(f.Name)]; !ok {
 		c.errorf(f.LastRef().AST(), `invalid style keyword: "%s"`, f.Name)
 		return
 	}
@@ -777,6 +781,7 @@ func (c *compiler) compileEdge(obj *d2graph.Object, e *d2ir.Edge) {
 			MapKeyEdgeIndex: er.Context_.EdgeIndex(),
 			Scope:           er.Context_.Scope,
 			ScopeAST:        er.Context_.ScopeAST,
+			ScopeObj:        obj,
 		}
 		if er.Context_.ScopeMap != nil && !d2ir.IsVar(er.Context_.ScopeMap) {
 			scopeObjIDA := d2graphIDA(d2ir.BoardIDA(er.Context_.ScopeMap))
@@ -814,7 +819,7 @@ func (c *compiler) compileEdgeMap(edge *d2graph.Edge, m *d2ir.Map) {
 		}
 	}
 	for _, f := range m.Fields {
-		_, ok := d2graph.ReservedKeywords[f.Name]
+		_, ok := d2ast.ReservedKeywords[f.Name]
 		if !ok {
 			c.errorf(f.References[0].AST(), `edge map keys must be reserved keywords`)
 			continue
@@ -825,12 +830,12 @@ func (c *compiler) compileEdgeMap(edge *d2graph.Edge, m *d2ir.Map) {
 
 func (c *compiler) compileEdgeField(edge *d2graph.Edge, f *d2ir.Field) {
 	keyword := strings.ToLower(f.Name)
-	_, isStyleReserved := d2graph.StyleKeywords[keyword]
+	_, isStyleReserved := d2ast.StyleKeywords[keyword]
 	if isStyleReserved {
 		c.errorf(f.LastRef().AST(), "%v must be style.%v", f.Name, f.Name)
 		return
 	}
-	_, isReserved := d2graph.SimpleReservedKeywords[keyword]
+	_, isReserved := d2ast.SimpleReservedKeywords[keyword]
 	if isReserved {
 		c.compileReserved(&edge.Attributes, f)
 		return
@@ -868,7 +873,7 @@ func (c *compiler) compileArrowheads(edge *d2graph.Edge, f *d2ir.Field) {
 	if f.Map() != nil {
 		for _, f2 := range f.Map().Fields {
 			keyword := strings.ToLower(f2.Name)
-			_, isReserved := d2graph.SimpleReservedKeywords[keyword]
+			_, isReserved := d2ast.SimpleReservedKeywords[keyword]
 			if isReserved {
 				c.compileReserved(attrs, f2)
 				continue
@@ -985,7 +990,7 @@ func (c *compiler) compileSQLTable(obj *d2graph.Object) {
 
 func (c *compiler) validateKeys(obj *d2graph.Object, m *d2ir.Map) {
 	for _, f := range m.Fields {
-		if _, ok := d2graph.BoardKeywords[f.Name]; ok {
+		if _, ok := d2ast.BoardKeywords[f.Name]; ok {
 			continue
 		}
 		c.validateKey(obj, f)
@@ -994,7 +999,7 @@ func (c *compiler) validateKeys(obj *d2graph.Object, m *d2ir.Map) {
 
 func (c *compiler) validateKey(obj *d2graph.Object, f *d2ir.Field) {
 	keyword := strings.ToLower(f.Name)
-	_, isReserved := d2graph.ReservedKeywords[keyword]
+	_, isReserved := d2ast.ReservedKeywords[keyword]
 	if isReserved {
 		switch obj.Shape.Value {
 		case d2target.ShapeCircle, d2target.ShapeSquare:
@@ -1067,7 +1072,7 @@ func (c *compiler) validateNear(g *d2graph.Graph) {
 	for _, obj := range g.Objects {
 		if obj.NearKey != nil {
 			nearObj, isKey := g.Root.HasChild(d2graph.Key(obj.NearKey))
-			_, isConst := d2graph.NearConstants[d2graph.Key(obj.NearKey)[0]]
+			_, isConst := d2ast.NearConstants[d2graph.Key(obj.NearKey)[0]]
 			if isKey {
 				// Doesn't make sense to set near to an ancestor or descendant
 				nearIsAncestor := false
@@ -1097,7 +1102,7 @@ func (c *compiler) validateNear(g *d2graph.Graph) {
 					continue
 				}
 				if nearObj.NearKey != nil {
-					_, nearObjNearIsConst := d2graph.NearConstants[d2graph.Key(nearObj.NearKey)[0]]
+					_, nearObjNearIsConst := d2ast.NearConstants[d2graph.Key(nearObj.NearKey)[0]]
 					if nearObjNearIsConst {
 						c.errorf(obj.NearKey, "near keys cannot be set to an object with a constant near key")
 						continue
@@ -1117,7 +1122,7 @@ func (c *compiler) validateNear(g *d2graph.Graph) {
 					continue
 				}
 			} else {
-				c.errorf(obj.NearKey, "near key %#v must be the absolute path to a shape or one of the following constants: %s", d2format.Format(obj.NearKey), strings.Join(d2graph.NearConstantsArray, ", "))
+				c.errorf(obj.NearKey, "near key %#v must be the absolute path to a shape or one of the following constants: %s", d2format.Format(obj.NearKey), strings.Join(d2ast.NearConstantsArray, ", "))
 				continue
 			}
 		}
@@ -1200,7 +1205,14 @@ func (c *compiler) validateBoardLinks(g *d2graph.Graph) {
 			continue
 		}
 
+		u, err := url.Parse(html.UnescapeString(obj.Link.Value))
+		isRemote := err == nil && strings.HasPrefix(u.Scheme, "http")
+		if isRemote {
+			continue
+		}
+
 		if linkKey.Path[0].Unbox().ScalarString() != "root" {
+			obj.Link = nil
 			continue
 		}
 

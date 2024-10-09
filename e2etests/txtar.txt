@@ -378,3 +378,94 @@ D: "Alignment\nOf\nAlignment\nOf"{
     RightAligned
     Justified
 }
+
+-- connection-style-fill --
+shape: sequence_diagram
+customer
+employee
+rental
+item
+
+alice
+bob
+
+(* -> *)[*].style.fill: black
+(* -> *)[*].style.font-color: white
+
+customer -> employee: "rent(this, i, p)"
+employee -> rental: "new(this, i, p)"
+rental -> employee
+employee -> rental: isValid()
+rental -> item: isRentable(c)
+item -> customer: is(Adult)
+customer -> item: true
+
+alice -> bob: What does it mean\nto be well-adjusted?
+bob -> alice: The ability to play bridge or\ngolf as if they were games.
+
+-- extended-ascii --
+1: |md
+  ÇéþüðæØÅßñò
+|
+2: |md
+  òØõùßÍÿåÆ
+|
+3: |md
+  çÆÐÞ©ßþúí
+|
+4: |md
+  ÉáøÿÑö
+|
+1 -> 2 -> 3 -> 4 -> 1
+
+-- unicode --
+■: |md
+  ■ foo bar
+|
+□: |md
+  □ foo bar
+|
+●: |md
+  ● foo bar
+|
+○: |md
+  ○ foo bar
+|
+◆: |md
+  ◆ foo bar
+|
+◇: |md
+  ◇ foo bar
+|
+▲: |md
+  ▲ foo bar
+|
+△: |md
+  △ foo bar
+|
+▼: |md
+  ▼ foo bar
+|
+▽: |md
+  ▽ foo bar
+|
+※: |md
+  ※ foo bar
+|
+◎: |md
+  ◎ foo bar
+|
+
+-- gradient --
+style.fill: "radial-gradient(circle, white 0%, #8A2BE2 60%, #4B0082 100%)"
+gradient: {
+  style.fill: "linear-gradient(#f69d3c, #3f87a6)"
+  style.stroke: "linear-gradient(to top right, red, blue)"
+  style.font-color: "radial-gradient(red, yellow, green, cyan, blue)"
+}
+colors: {
+  style.fill: "linear-gradient(45deg, rgba(255,0,0,0.5) 0%, rgba(0,0,255,0.5) 100%)"
+  style.stroke: "linear-gradient(to right, red, blue, green)"
+  style.font-color: "linear-gradient(to bottom right, red 0%, yellow 25%, green 50%, cyan 75%, blue 100%)"
+}
+gradient -> colors

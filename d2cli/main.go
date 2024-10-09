@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
+	"log/slog"
 	"os"
 	"os/exec"
 	"os/user"
@@ -36,7 +36,7 @@ import (
 	"oss.terrastruct.com/d2/d2themes/d2themescatalog"
 	"oss.terrastruct.com/d2/lib/background"
 	"oss.terrastruct.com/d2/lib/imgbundler"
-	ctxlog "oss.terrastruct.com/d2/lib/log"
+	"oss.terrastruct.com/d2/lib/log"
 	"oss.terrastruct.com/d2/lib/pdf"
 	"oss.terrastruct.com/d2/lib/png"
 	"oss.terrastruct.com/d2/lib/pptx"
@@ -45,15 +45,10 @@ import (
 	timelib "oss.terrastruct.com/d2/lib/time"
 	"oss.terrastruct.com/d2/lib/version"
 	"oss.terrastruct.com/d2/lib/xgif"
-
-	"cdr.dev/slog"
-	"cdr.dev/slog/sloggers/sloghuman"
 )
 
 func Run(ctx context.Context, ms *xmain.State) (err error) {
-	// :(
-	ctx = DiscardSlog(ctx)
-
+	ctx = log.WithDefault(ctx)
 	// These should be kept up-to-date with the d2 man page
 	watchFlag, err := ms.Opts.Bool("D2_WATCH", "watch", "w", false, "watch for changes to input and live reload. Use $HOST and $PORT to specify the listening address.\n(default localhost:0, which is will open on a randomly available local port).")
 	if err != nil {
@@ -169,6 +164,7 @@ func Run(ctx context.Context, ms *xmain.State) (err error) {
 	}
 
 	if *debugFlag {
+		ctx = log.Leveled(ctx, slog.LevelDebug)
 		ms.Env.Setenv("DEBUG", "1")
 	}
 	if *imgCacheFlag {
@@ -541,7 +537,7 @@ func compile(ctx context.Context, ms *xmain.State, plugins []d2plugin.Plugin, fs
 		if err != nil {
 			return nil, false, err
 		}
-		err = ms.WritePath(outputPath, out)
+		err = Write(ms, outputPath, out)
 		if err != nil {
 			return nil, false, err
 		}
@@ -617,11 +613,15 @@ func compile(ctx context.Context, ms *xmain.State, plugins []d2plugin.Plugin, fs
 				if err != nil {
 					return nil, false, err
 				}
+				out, err = plugin.PostProcess(ctx, out)
+				if err != nil {
+					return nil, false, err
+				}
 				err = os.MkdirAll(filepath.Dir(outputPath), 0755)
 				if err != nil {
 					return nil, false, err
 				}
-				err = ms.WritePath(outputPath, out)
+				err = Write(ms, outputPath, out)
 				if err != nil {
 					return nil, false, err
 				}
@@ -858,9 +858,11 @@ func _render(ctx context.Context, ms *xmain.State, plugin d2plugin.Plugin, opts 
 		return nil, err
 	}
 
-	svg, err = plugin.PostProcess(ctx, svg)
-	if err != nil {
-		return svg, err
+	if opts.MasterID == "" {
+		svg, err = plugin.PostProcess(ctx, svg)
+		if err != nil {
+			return svg, err
+		}
 	}
 
 	cacheImages := ms.Env.Getenv("IMG_CACHE") == "1"
@@ -904,7 +906,7 @@ func _render(ctx context.Context, ms *xmain.State, plugin d2plugin.Plugin, opts 
 		if err != nil {
 			return svg, err
 		}
-		err = ms.WritePath(outputPath, out)
+		err = Write(ms, outputPath, out)
 		if err != nil {
 			return svg, err
 		}
@@ -1042,10 +1044,14 @@ func renderPPTX(ctx context.Context, ms *xmain.State, presentation *pptx.Present
 		var err error
 
 		svg, err = d2svg.Render(diagram, &d2svg.RenderOpts{
-			Pad:    opts.Pad,
-			Sketch: opts.Sketch,
-			Center: opts.Center,
-			Scale:  scale,
+			Pad:                opts.Pad,
+			Sketch:             opts.Sketch,
+			Center:             opts.Center,
+			Scale:              scale,
+			ThemeID:            opts.ThemeID,
+			DarkThemeID:        opts.DarkThemeID,
+			ThemeOverrides:     opts.ThemeOverrides,
+			DarkThemeOverrides: opts.DarkThemeOverrides,
 		})
 		if err != nil {
 			return nil, err
@@ -1169,11 +1175,6 @@ func renameExt(fp string, newExt string) string {
 func getFileName(path string) string {
 	ext := filepath.Ext(path)
 	return strings.TrimSuffix(filepath.Base(path), ext)
-}
-
-// TODO: remove after removing slog
-func DiscardSlog(ctx context.Context) context.Context {
-	return ctxlog.With(ctx, slog.Make(sloghuman.Sink(io.Discard)))
 }
 
 func populateLayoutOpts(ctx context.Context, ms *xmain.State, ps []d2plugin.Plugin) error {
@@ -1368,6 +1369,15 @@ func AnimatePNGs(ms *xmain.State, pngs [][]byte, animIntervalMs int) ([]byte, er
 	return xgif.AnimatePNGs(pngs, animIntervalMs)
 }
 
+func Write(ms *xmain.State, path string, out []byte) error {
+	err := ms.AtomicWritePath(path, out)
+	if err == nil {
+		return nil
+	}
+	ms.Log.Debug.Printf("atomic write failed: %s, trying non-atomic write", err.Error())
+	return ms.WritePath(path, out)
+}
+
 func init() {
-	ctxlog.Init()
+	log.Init()
 }

@@ -95,6 +95,54 @@ func TestCLI_E2E(t *testing.T) {
 			},
 		},
 		{
+			name: "sequence-layer",
+			run: func(t *testing.T, ctx context.Context, dir string, env *xos.Env) {
+				writeFile(t, dir, "index.d2", `k; layers: { seq: @seq.d2 }`)
+				writeFile(t, dir, "seq.d2", `shape: sequence_diagram
+a: me
+b: github.com/terrastruct/d2
+
+a -> b: issue about a bug
+a."some note about the bug"
+
+if i'm right: {
+	a <- b: fix
+}
+
+if i'm wrong: {
+	a <- b: nah, intended
+}`)
+				err := runTestMain(t, ctx, dir, env, "index.d2")
+				assert.Success(t, err)
+
+				assert.TestdataDir(t, filepath.Join(dir, "index"))
+			},
+		},
+		{
+			name: "sequence-spread-layer",
+			run: func(t *testing.T, ctx context.Context, dir string, env *xos.Env) {
+				writeFile(t, dir, "index.d2", `k; layers: { seq: {...@seq.d2} }`)
+				writeFile(t, dir, "seq.d2", `shape: sequence_diagram
+a: me
+b: github.com/terrastruct/d2
+
+a -> b: issue about a bug
+a."some note about the bug"
+
+if i'm right: {
+	a <- b: fix
+}
+
+if i'm wrong: {
+	a <- b: nah, intended
+}`)
+				err := runTestMain(t, ctx, dir, env, "index.d2")
+				assert.Success(t, err)
+
+				assert.TestdataDir(t, filepath.Join(dir, "index"))
+			},
+		},
+		{
 			// Skip the empty base board so the animation doesn't show blank for 1400ms
 			name: "empty-base",
 			run: func(t *testing.T, ctx context.Context, dir string, env *xos.Env) {
@@ -638,6 +686,43 @@ steps: {
 			},
 		},
 		{
+			name:   "pptx-theme-overrides",
+			skipCI: true,
+			run: func(t *testing.T, ctx context.Context, dir string, env *xos.Env) {
+				writeFile(t, dir, "in.d2", `vars:{
+  d2-config: {
+    theme-overrides: {
+			# All red
+      N1:  "#ff0000"
+      B1:  "#ff0000"
+      B2:  "#ff0000"
+      AA2: "#ff0000"
+      N2:  "#ff0000"
+      N6:  "#ff0000"
+      B4:  "#ff0000"
+      B5:  "#ff0000"
+      B3:  "#ff0000"
+      N4:  "#ff0000"
+      N5:  "#ff0000"
+      AA4: "#ff0000"
+      AB4: "#ff0000"
+      B6:  "#ff0000"
+      N7:  "#ff0000"
+      AA5: "#ff0000"
+      AB5: "#ff0000"
+    }
+  }
+}
+a->z
+a.b.c.d
+`)
+				err := runTestMain(t, ctx, dir, env, "in.d2", "all_red.pptx")
+				assert.Success(t, err)
+				pptx := readFile(t, dir, "all_red.pptx")
+				testdataIgnoreDiff(t, ".pptx", pptx)
+			},
+		},
+		{
 			name:   "one-layer-gif",
 			skipCI: true,
 			run: func(t *testing.T, ctx context.Context, dir string, env *xos.Env) {
@@ -948,12 +1033,9 @@ layers: {
 			name:   "watch-ok-link",
 			serial: true,
 			run: func(t *testing.T, ctx context.Context, dir string, env *xos.Env) {
-				// This link technically works because D2 interprets it as a URL,
-				// and on local filesystem, that is whe path where the compilation happens
-				// to output it to.
 				writeFile(t, dir, "index.d2", `
 a -> b
-b.link: cream
+b.link: layers.cream
 
 layers: {
     cream: {
@@ -1111,58 +1193,6 @@ layers: {
 				assert.Success(t, err)
 				_, _, err = c.Read(ctx)
 				assert.Success(t, err)
-				successRE := regexp.MustCompile(`broadcasting update to 1 client`)
-				_, err = waitLogs(ctx, stderr, successRE)
-				assert.Success(t, err)
-			},
-		},
-		{
-			name:   "watch-bad-link",
-			serial: true,
-			run: func(t *testing.T, ctx context.Context, dir string, env *xos.Env) {
-				// Just verify we don't crash even with a bad link (it's treated as a URL, which users might have locally)
-				writeFile(t, dir, "index.d2", `
-a -> b
-b.link: dream
-
-layers: {
-    cream: {
-        c -> b
-    }
-}`)
-				stderr := &stderrWrapper{}
-				tms := testMain(dir, env, "--watch", "--browser=0", "index.d2")
-				tms.Stderr = stderr
-
-				tms.Start(t, ctx)
-				defer func() {
-					// Manually close, since watcher is daemon
-					err := tms.Signal(ctx, os.Interrupt)
-					assert.Success(t, err)
-				}()
-
-				// Wait for watch server to spin up and listen
-				urlRE := regexp.MustCompile(`127.0.0.1:([0-9]+)`)
-				watchURL, err := waitLogs(ctx, stderr, urlRE)
-				assert.Success(t, err)
-				stderr.Reset()
-
-				// Start a client
-				c, _, err := websocket.Dial(ctx, fmt.Sprintf("ws://%s/watch", watchURL), nil)
-				assert.Success(t, err)
-				defer c.CloseNow()
-
-				// Get the link
-				_, msg, err := c.Read(ctx)
-				assert.Success(t, err)
-				aRE := regexp.MustCompile(`href=\\"([^\"]*)\\"`)
-				match := aRE.FindSubmatch(msg)
-				assert.Equal(t, 2, len(match))
-				linkedPath := match[1]
-
-				err = getWatchPage(ctx, t, fmt.Sprintf("http://%s/%s", watchURL, linkedPath))
-				assert.Success(t, err)
-
 				successRE := regexp.MustCompile(`broadcasting update to 1 client`)
 				_, err = waitLogs(ctx, stderr, successRE)
 				assert.Success(t, err)

@@ -1,26 +1,12 @@
 #### Features 🚀
 
-- Vars: Variable definitions can now refer to other variables in the current scope [#2052](https://github.com/terrastruct/d2/pull/2052)
-- Composition: Imported boards can use underscores to reference boards beyond its own
-  scope (e.g. to a sibling board at the scope its imported to) [#2075](https://github.com/terrastruct/d2/pull/2075)
+- Render: SVG files render in non-browser contexts (e.g. Inkscape, LaTeX) [#2147](https://github.com/terrastruct/d2/pull/2147)
 
 #### Improvements 🧹
 
-- Sequence diagram: edge groups account for edge label heights [#2038](https://github.com/terrastruct/d2/pull/2038)
-- Sequence diagram: self-referential edges account for edge label heights [#2040](https://github.com/terrastruct/d2/pull/2040)
-- Sequence diagram: The spacing between self-referential edges and regular edges is uniform [#2043](https://github.com/terrastruct/d2/pull/2043)
-- Compiler: Error on multi-line labels in `sql_table` shapes [#2057](https://github.com/terrastruct/d2/pull/2057)
-- Sequence diagram: Image shape actors can use spans and notes [#2056](https://github.com/terrastruct/d2/issues/2056)
+- Lib: removes a dependency on external slog that was causing troubles with installation [#2137](https://github.com/terrastruct/d2/pull/2137)
+- CLI: attempts writing to path atomically, falling back to non-atomic if failed [#2141](https://github.com/terrastruct/d2/pull/2141)
 
 #### Bugfixes ⛑️
 
-- Sequence diagram: multi-line edge labels no longer can collide with other elements [#2049](https://github.com/terrastruct/d2/pull/2049)
-- Sequence diagram: long self-referential edge labels no longer can collide neighboring actors (or its own) lifeline edges [#2050](https://github.com/terrastruct/d2/pull/2050)
-- Globs: An edge case was fixed where globs used in edges were creating nodes when it shouldn't have [#2051](https://github.com/terrastruct/d2/pull/2051)
-- Render: Multi-line class labels/headers are rendered correctly [#2057](https://github.com/terrastruct/d2/pull/2057)
-- CLI: Watch mode uses correct backlinks (`_` usages) [#2058](https://github.com/terrastruct/d2/pull/2058)
-- Vars: Spread variables are inserted in place instead of appending to end of scope [#2062](https://github.com/terrastruct/d2/pull/2062)
-- Imports: fix local icon imports from files that are imported [#2066](https://github.com/terrastruct/d2/pull/2066)
-- CLI: fixes edge case of watch mode links to nested board that had more nested boards not working [#2070](https://github.com/terrastruct/d2/pull/2070)
-- CLI: fixes theme flag not being passed to GIF outputs [#2071](https://github.com/terrastruct/d2/pull/2071)
-- CLI: fixes scale flag not being passed to animated SVG outputs [#2071](https://github.com/terrastruct/d2/pull/2071)
+- Render: fixes edge case of a 3d shape with outside label being cut off [#2132](https://github.com/terrastruct/d2/pull/2132)

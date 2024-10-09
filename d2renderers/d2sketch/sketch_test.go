@@ -3,12 +3,11 @@ package d2sketch_test
 import (
 	"context"
 	"encoding/xml"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"cdr.dev/slog"
 
 	tassert "github.com/stretchr/testify/assert"
 
@@ -1323,6 +1322,27 @@ C <-> D: triangle {
   }
 }`,
 		},
+		{
+			name: "connection-style-fill",
+			script: `
+shape: sequence_diagram
+customer
+employee
+rental
+item
+
+(* -> *)[*].style.fill: black
+(* -> *)[*].style.font-color: white
+
+customer -> employee: "rent(this, i, p)"
+employee -> rental: "new(this, i, p)"
+rental -> employee
+employee -> rental: isValid()
+rental -> item: isRentable(c)
+item -> customer: is(Adult)
+customer -> item: true
+`,
+		},
 	}
 	runa(t, tcs)
 }
@@ -1351,7 +1371,7 @@ func runa(t *testing.T, tcs []testCase) {
 
 func run(t *testing.T, tc testCase) {
 	ctx := context.Background()
-	ctx = log.WithTB(ctx, t, nil)
+	ctx = log.WithTB(ctx, t)
 	ctx = log.Leveled(ctx, slog.LevelDebug)
 
 	ruler, err := textmeasure.NewRuler()
