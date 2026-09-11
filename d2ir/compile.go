@@ -43,7 +43,10 @@ type compiler struct {
 	// and glob state cannot leak between import sites.
 	parsedImports   map[string]*d2ast.Map
 	importTemplates map[string]*importTemplate
-	utf16Pos        bool
+	// Composite maps may be revisited through valid variable aliases. Report a
+	// rejected cycle once at its source substitution rather than once per alias.
+	reportedCompositeCycles map[*d2ast.Substitution]struct{}
+	utf16Pos                bool
 
 	// Stack of globs that must be recomputed at each new object in and below the current scope.
 	globContextStack [][]*globContext
@@ -95,10 +98,11 @@ func Compile(ast *d2ast.Map, opts *CompileOptions) (*Map, []string, error) {
 		ctx: ctx,
 		fs:  opts.FS,
 
-		seenImports:     make(map[string]struct{}),
-		parsedImports:   make(map[string]*d2ast.Map),
-		importTemplates: make(map[string]*importTemplate),
-		utf16Pos:        opts.UTF16Pos,
+		seenImports:             make(map[string]struct{}),
+		parsedImports:           make(map[string]*d2ast.Map),
+		importTemplates:         make(map[string]*importTemplate),
+		reportedCompositeCycles: make(map[*d2ast.Substitution]struct{}),
+		utf16Pos:                opts.UTF16Pos,
 	}
 	m := &Map{}
 	m.initRoot()
@@ -283,6 +287,13 @@ func (c *compiler) resolveSubstitutions(varsStack []*Map, node Node) (removedFie
 					c.errorf(node.LastRef().AST(), `could not resolve variable "%s"`, strings.Join(box.Substitution.IDA(), "."))
 					return
 				}
+				if resolvedField.Composite != nil && substitutionUsesComposite(node, box.Substitution.Spread) {
+					if compositeContainsNode(resolvedField.Composite, node) ||
+						(box.Substitution.Spread && c.spreadCompositeReferencesNode(resolvedField.Composite, node, varsStack)) {
+						c.reportCompositeCycle(box.Substitution)
+						return
+					}
+				}
 				if box.Substitution.Spread {
 					if resolvedField.Composite == nil {
 						c.errorf(box.Substitution, "cannot spread non-composite")
@@ -305,6 +316,10 @@ func (c *compiler) resolveSubstitutions(varsStack []*Map, node Node) (removedFie
 					case *Field:
 						m := ParentMap(n)
 						if resolvedField.Map() != nil {
+							if hasUnresolvedMapSpread(resolvedField.Map()) {
+								c.errorf(box.Substitution, `cannot spread composite variable "%s" before its spread substitutions are resolved`, strings.Join(box.Substitution.IDA(), "."))
+								return
+							}
 							expandSubstitutionIndexed(m, resolvedField.Map(), n)
 						}
 						// Remove the placeholder field
@@ -405,6 +420,162 @@ func (c *compiler) resolveSubstitutions(varsStack []*Map, node Node) (removedFie
 		s.Value = preprocessedValue
 	}
 	return removedField
+}
+
+func (c *compiler) reportCompositeCycle(substitution *d2ast.Substitution) {
+	if _, reported := c.reportedCompositeCycles[substitution]; reported {
+		return
+	}
+	if c.reportedCompositeCycles == nil {
+		c.reportedCompositeCycles = make(map[*d2ast.Substitution]struct{})
+	}
+	c.reportedCompositeCycles[substitution] = struct{}{}
+	c.errorf(substitution, `cyclic composite variable reference "%s"`, strings.Join(substitution.IDA(), "."))
+}
+
+func substitutionUsesComposite(node Node, spread bool) bool {
+	switch node.(type) {
+	case *Field, *Edge:
+		return true
+	case *Scalar:
+		return spread
+	default:
+		return false
+	}
+}
+
+// spreadCompositeReferencesNode follows unresolved spread substitutions
+// anywhere below composite without mutating it. Map spread expansion copies
+// fields, while array spread expansion shares values, so a pointer-only
+// containment check cannot see an indirect cycle until after the first
+// expansion. Following the spread dependencies first keeps cycle rejection
+// ahead of every mutation.
+func (c *compiler) spreadCompositeReferencesNode(composite Composite, target Node, varsStack []*Map) bool {
+	stack := []Composite{composite}
+	seen := make(map[Composite]struct{})
+	for len(stack) > 0 {
+		current := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if _, ok := seen[current]; ok {
+			continue
+		}
+		seen[current] = struct{}{}
+		if compositeContainsNode(current, target) {
+			return true
+		}
+
+		for _, candidate := range compositeSpreadNodes(current) {
+			primary := candidate.Primary()
+			if primary == nil {
+				continue
+			}
+			unquoted, ok := primary.Value.(*d2ast.UnquotedString)
+			if !ok {
+				continue
+			}
+			for _, box := range unquoted.Value {
+				if box.Substitution == nil || !box.Substitution.Spread {
+					continue
+				}
+				for i, vars := range varsStack {
+					resolved := c.resolveSubstitution(vars, candidate, box.Substitution, i == 0)
+					if resolved == nil {
+						continue
+					}
+					if resolved.Composite != nil {
+						stack = append(stack, resolved.Composite)
+					}
+					break
+				}
+			}
+		}
+	}
+	return false
+}
+
+func compositeSpreadNodes(composite Composite) (nodes []Node) {
+	walkComposite(composite, func(n Node) bool {
+		switch n := n.(type) {
+		case *Field:
+			if n != nil && n.Name == nil {
+				nodes = append(nodes, n)
+			}
+		case *Scalar:
+			if n != nil {
+				if _, ok := n.Parent().(*Array); ok {
+					nodes = append(nodes, n)
+				}
+			}
+		}
+		return false
+	})
+	return nodes
+}
+
+func hasUnresolvedMapSpread(m *Map) bool {
+	for _, field := range m.Fields {
+		if field == nil || field.Name == nil {
+			return true
+		}
+	}
+	return false
+}
+
+// compositeContainsNode reports whether target is reachable through a
+// composite's child structure. Composite substitutions deliberately share the
+// resolved value, so attaching a composite below one of its own descendants
+// would turn the IR tree into a cycle. Use an iterative walk with a visited set
+// because earlier valid substitutions can make the structure a DAG, and the
+// check must also terminate defensively if handed an already-cyclic IR.
+func compositeContainsNode(composite Composite, target Node) bool {
+	return walkComposite(composite, func(n Node) bool {
+		return n == target
+	})
+}
+
+func walkComposite(composite Composite, visit func(Node) bool) bool {
+	stack := []Node{composite}
+	seen := make(map[Node]struct{})
+	for len(stack) > 0 {
+		n := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if _, ok := seen[n]; ok {
+			continue
+		}
+		seen[n] = struct{}{}
+		if visit(n) {
+			return true
+		}
+
+		switch n := n.(type) {
+		case *Map:
+			if n == nil {
+				continue
+			}
+			for _, f := range n.Fields {
+				stack = append(stack, f)
+			}
+			for _, e := range n.Edges {
+				stack = append(stack, e)
+			}
+		case *Field:
+			if n != nil && n.Composite != nil {
+				stack = append(stack, n.Composite)
+			}
+		case *Edge:
+			if n != nil && n.Map_ != nil {
+				stack = append(stack, n.Map_)
+			}
+		case *Array:
+			if n == nil {
+				continue
+			}
+			for _, value := range n.Values {
+				stack = append(stack, value)
+			}
+		}
+	}
+	return false
 }
 
 func (c *compiler) collectVariables(vars *Map, variables map[string]string) {

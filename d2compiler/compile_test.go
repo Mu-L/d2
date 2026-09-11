@@ -70,6 +70,194 @@ func TestClassReferenceCycle(t *testing.T) {
 class-cycle.d2:1:17: class "x" forms a reference cycle`)
 }
 
+func TestCompositeVariableCycles(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name string
+		dsl  string
+		want string
+	}{
+		{
+			name: "self_descendant",
+			dsl: `vars: {
+  x: {
+    y: ${x}
+  }
+}
+a: ${x}`,
+			want: `variable-cycle.d2:3:8: cyclic composite variable reference "x"`,
+		},
+		{
+			name: "indirect",
+			dsl: `vars: {
+  x: {
+    through-y: ${y}
+  }
+  y: {
+    through-x: ${x}
+  }
+}
+a: ${x}`,
+			want: `variable-cycle.d2:6:16: cyclic composite variable reference "x"`,
+		},
+		{
+			name: "edge",
+			dsl: `vars: {
+  x: {
+    a -> b: ${x}
+  }
+}`,
+			want: `variable-cycle.d2:3:13: cyclic composite variable reference "x"`,
+		},
+		{
+			name: "map_self_spread",
+			dsl: `vars: {
+  x: {
+    ...${x}
+  }
+}
+a: ${x}`,
+			want: `variable-cycle.d2:3:5: cyclic composite variable reference "x"`,
+		},
+		{
+			name: "map_indirect_spread",
+			dsl: `vars: {
+  x: {
+    ...${y}
+  }
+  y: {
+    ...${x}
+  }
+}
+a: ${x}`,
+			want: `variable-cycle.d2:3:5: cyclic composite variable reference "y"
+variable-cycle.d2:6:5: cyclic composite variable reference "x"`,
+		},
+		{
+			name: "map_nested_indirect_spread",
+			dsl: `vars: {
+  x: {
+    nested: {
+      ...${y}
+    }
+  }
+  y: {
+    ...${x}
+  }
+}
+a: ${x}`,
+			want: `variable-cycle.d2:4:7: cyclic composite variable reference "y"
+variable-cycle.d2:8:5: cyclic composite variable reference "x"`,
+		},
+		{
+			name: "edge_map_nested_indirect_spread",
+			dsl: `vars: {
+  x: {
+    a -> b: {
+      ...${y}
+    }
+  }
+  y: {
+    ...${x}
+  }
+}
+a: ${x}`,
+			want: `variable-cycle.d2:4:7: cyclic composite variable reference "y"
+variable-cycle.d2:8:5: cyclic composite variable reference "x"`,
+		},
+		{
+			name: "array_self_spread",
+			dsl: `vars: {
+  x: [...${x}]
+}
+a.class: ${x}`,
+			want: `variable-cycle.d2:2:7: cyclic composite variable reference "x"`,
+		},
+		{
+			name: "array_indirect_spread",
+			dsl: `vars: {
+  x: [...${y}]
+  y: [...${x}]
+}
+a.class: ${x}`,
+			want: `variable-cycle.d2:2:7: cyclic composite variable reference "y"
+variable-cycle.d2:3:7: cyclic composite variable reference "x"`,
+		},
+		{
+			name: "array_nested_indirect_spread",
+			dsl: `vars: {
+  x: [[...${y}]]
+  y: [...${x}]
+}
+a.class: ${x}`,
+			want: `variable-cycle.d2:3:7: cyclic composite variable reference "x"`,
+		},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			_, _, err := d2compiler.Compile("variable-cycle.d2", strings.NewReader(tc.dsl), nil)
+			assert.ErrorString(t, err, tc.want)
+		})
+	}
+}
+
+func TestCompositeVariableAliasingRemainsValid(t *testing.T) {
+	t.Parallel()
+
+	g, _, err := d2compiler.Compile("variable-alias.d2", strings.NewReader(`vars: {
+  x: {
+    child
+  }
+}
+a: ${x}
+b: ${x}`), nil)
+	assert.Success(t, err)
+	assert.Equal(t, 4, len(g.Objects))
+	assert.String(t, "a.child", g.Objects[1].AbsID())
+	assert.String(t, "b.child", g.Objects[3].AbsID())
+}
+
+func TestCompositeVariableSpreadsRemainValid(t *testing.T) {
+	t.Parallel()
+
+	g, _, err := d2compiler.Compile("variable-spread.d2", strings.NewReader(`vars: {
+  children: {
+    child
+  }
+  tags: [one; two]
+}
+a: {
+  ...${children}
+  class: [...${tags}]
+}`), nil)
+	assert.Success(t, err)
+	assert.Equal(t, 2, len(g.Objects))
+	assert.String(t, "a.child", g.Objects[1].AbsID())
+	assert.Equal(t, 2, len(g.Objects[0].Attributes.Classes))
+	assert.String(t, "one", g.Objects[0].Attributes.Classes[0])
+	assert.String(t, "two", g.Objects[0].Attributes.Classes[1])
+}
+
+func TestCompositeVariableForwardSpreadFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	_, _, err := d2compiler.Compile("variable-forward-spread.d2", strings.NewReader(`vars: {
+  x: {
+    ...${y}
+  }
+  y: {
+    ...${z}
+  }
+  z: {
+    leaf
+  }
+}
+a: ${x}`), nil)
+	assert.ErrorString(t, err, `variable-forward-spread.d2:3:5: cannot spread composite variable "y" before its spread substitutions are resolved`)
+}
+
 func TestEdgeLinkBecomesLabel(t *testing.T) {
 	t.Parallel()
 
