@@ -70,7 +70,8 @@ type CompileOptions struct {
 	// treated as context.Background().
 	Context  context.Context
 	UTF16Pos bool
-	// Pass nil to disable imports.
+	// FS resolves imports. Nil disables imports. The lib/localfile package
+	// provides rooted and explicit unrestricted host-filesystem policies.
 	FS fs.FS
 }
 

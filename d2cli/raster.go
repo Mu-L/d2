@@ -25,6 +25,7 @@ import (
 	"github.com/d2lang/d2/d2renderers/d2svgimport"
 	"github.com/d2lang/d2/d2target"
 	"github.com/d2lang/d2/lib/imageasset"
+	"github.com/d2lang/d2/lib/localfile"
 	"github.com/d2lang/d2/lib/netpolicy"
 	"github.com/d2lang/d2/lib/xgif"
 )
@@ -1031,6 +1032,7 @@ func newSceneAssetOptions(ctx context.Context, inputPath string, cacheImages boo
 	}
 	resolver, err := imageasset.New(imageasset.Options{
 		BaseDir:        baseDir,
+		LocalFiles:     localfile.Unrestricted(),
 		HTTPClient:     assetHTTPClient,
 		NetworkPolicy:  netpolicy.FromContext(ctx),
 		Cache:          cache,

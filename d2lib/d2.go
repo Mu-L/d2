@@ -22,7 +22,11 @@ import (
 )
 
 type CompileOptions struct {
-	UTF16Pos       bool
+	UTF16Pos bool
+	// FS is the file system used for resolving imports in the D2 text. Nil
+	// disables imports. Callers that accept untrusted input should prefer a
+	// filesystem constrained to the intended import root; lib/localfile provides
+	// rooted and explicit unrestricted host-filesystem policies.
 	FS             fs.FS
 	MeasuredTexts  []*d2target.MText
 	Ruler          *textmeasure.Ruler

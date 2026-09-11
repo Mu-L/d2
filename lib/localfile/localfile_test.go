@@ -1,0 +1,120 @@
+package localfile
+
+import (
+	"errors"
+	"io"
+	"os"
+	"path/filepath"
+	"runtime"
+	"testing"
+)
+
+func TestZeroPolicyDeniesLocalFiles(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "secret")
+	if err := os.WriteFile(path, []byte("secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var policy Policy
+	if _, err := policy.Open(path); !errors.Is(err, ErrDenied) {
+		t.Fatalf("Open error = %v, want ErrDenied", err)
+	}
+	if _, err := policy.CacheKey(path); !errors.Is(err, ErrDenied) {
+		t.Fatalf("CacheKey error = %v, want ErrDenied", err)
+	}
+}
+
+func TestRootedPolicyContainsOpens(t *testing.T) {
+	parent := t.TempDir()
+	root := filepath.Join(parent, "root")
+	if err := os.Mkdir(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	inside := filepath.Join(root, "inside.txt")
+	outside := filepath.Join(parent, "outside.txt")
+	if err := os.WriteFile(inside, []byte("inside"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(outside, []byte("outside"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	policy, err := Rooted(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, name := range []string{"inside.txt", inside} {
+		file, err := policy.Open(name)
+		if err != nil {
+			t.Fatalf("Open(%q): %v", name, err)
+		}
+		data, readErr := io.ReadAll(file)
+		closeErr := file.Close()
+		if readErr != nil || closeErr != nil {
+			t.Fatalf("read/close %q: %v / %v", name, readErr, closeErr)
+		}
+		if string(data) != "inside" {
+			t.Fatalf("Open(%q) = %q", name, data)
+		}
+	}
+	for _, name := range []string{"../outside.txt", outside} {
+		if _, err := policy.Open(name); !errors.Is(err, ErrDenied) {
+			t.Fatalf("Open(%q) error = %v, want ErrDenied", name, err)
+		}
+	}
+}
+
+func TestRootedPolicyRejectsSymlinkEscape(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("creating symlinks commonly requires elevated Windows privileges")
+	}
+	parent := t.TempDir()
+	root := filepath.Join(parent, "root")
+	if err := os.Mkdir(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(parent, "outside.txt")
+	if err := os.WriteFile(outside, []byte("outside"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(root, "escape")); err != nil {
+		t.Fatal(err)
+	}
+	policy, err := Rooted(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := policy.Open("escape"); err == nil {
+		t.Fatal("Open followed a symlink outside the configured root")
+	}
+}
+
+func TestUnrestrictedPolicyIsExplicitAndCacheScoped(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "file")
+	if err := os.WriteFile(path, []byte("ok"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rooted, err := Rooted(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unrestricted := Unrestricted()
+	rootedKey, err := rooted.CacheKey(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unrestrictedKey, err := unrestricted.CacheKey(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rootedKey == unrestrictedKey {
+		t.Fatal("rooted and unrestricted cache keys collide")
+	}
+	file, err := unrestricted.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+}

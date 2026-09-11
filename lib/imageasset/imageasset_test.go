@@ -27,6 +27,7 @@ import (
 
 	"github.com/andybalholm/brotli"
 
+	"github.com/d2lang/d2/lib/localfile"
 	"github.com/d2lang/d2/lib/netpolicy"
 )
 
@@ -833,6 +834,9 @@ func newTestResolver(t *testing.T, options Options) *Resolver {
 	// transports. Tests of the default public-only policy construct a Resolver
 	// directly instead.
 	options.NetworkPolicy = netpolicy.Policy{AllowPrivateNetworks: true}
+	// Existing format, cache, and limit tests model a trusted local caller.
+	// Policy-denial and rooted behavior are covered with direct New calls.
+	options.LocalFiles = localfile.Unrestricted()
 	if options.Limits == (Limits{}) {
 		options.Limits = generousLimits()
 	}

@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/d2lang/d2/lib/localfile"
 	"github.com/d2lang/d2/lib/netpolicy"
 )
 
@@ -248,9 +249,14 @@ func (c *MemoryCache) Put(key string, resource *Resource) {
 
 // Options configures one independent resolver.
 type Options struct {
-	// BaseDir resolves relative local paths. New makes it absolute; an empty
-	// value freezes the current working directory at construction time.
-	BaseDir    string
+	// BaseDir resolves relative local paths. New makes it absolute. When it is
+	// empty, rooted local-file policies use their configured root and other
+	// policies freeze the current working directory at construction time.
+	BaseDir string
+	// LocalFiles controls local-file access. Its zero value denies local files.
+	// Use localfile.Rooted for untrusted input. localfile.Unrestricted is an
+	// explicit opt-in intended only for trusted local applications.
+	LocalFiles localfile.Policy
 	HTTPClient *http.Client
 	// NetworkPolicy defaults to public addresses only. Trusted callers can
 	// explicitly allow private-network assets.
@@ -268,6 +274,7 @@ type Options struct {
 // owns no global state and is safe for concurrent use.
 type Resolver struct {
 	baseDir     string
+	localFiles  localfile.Policy
 	client      *http.Client
 	cache       Cache
 	cachePrefix string
@@ -291,7 +298,11 @@ func New(options Options) (*Resolver, error) {
 	}
 	baseDir := options.BaseDir
 	if baseDir == "" {
-		baseDir = "."
+		if root, ok := options.LocalFiles.RootPath(); ok {
+			baseDir = root
+		} else {
+			baseDir = "."
+		}
 	}
 	absolute, err := filepath.Abs(baseDir)
 	if err != nil {
@@ -326,6 +337,7 @@ func New(options Options) (*Resolver, error) {
 	}
 	return &Resolver{
 		baseDir:         baseDir,
+		localFiles:      options.LocalFiles,
 		client:          client,
 		cache:           options.Cache,
 		cachePrefix:     cachePrefix,

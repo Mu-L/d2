@@ -3,7 +3,10 @@ package d2lib
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/d2lang/d2/d2graph"
@@ -22,6 +25,19 @@ func TestParseAndCompileHonorCanceledContext(t *testing.T) {
 	}
 	if _, _, err := Compile(ctx, "x", nil, nil); !errors.Is(err, context.Canceled) {
 		t.Fatalf("Compile() error = %v, want context.Canceled", err)
+	}
+}
+
+func TestNilFSDeniesImports(t *testing.T) {
+	directory := t.TempDir()
+	if err := os.WriteFile(filepath.Join(directory, "secret.d2"), []byte("disclosed"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err := Compile(context.Background(), "...@secret", &CompileOptions{
+		InputPath: filepath.Join(directory, "index.d2"),
+	}, nil)
+	if err == nil || !strings.Contains(err.Error(), "imports are disabled") {
+		t.Fatalf("Compile error = %v, want imports-disabled error", err)
 	}
 }
 
