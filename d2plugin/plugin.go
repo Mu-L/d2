@@ -168,6 +168,11 @@ func externalPluginName(path string) string {
 	return basename
 }
 
+// ListPluginInfos returns metadata by executing Info on every plugin.
+//
+// Deprecated: Use ListPluginSummaries for execution-free discovery or
+// FindPlugin when selecting one plugin. ListPluginInfos executes every external
+// binary in ps.
 func ListPluginInfos(ctx context.Context, ps []Plugin) ([]*PluginInfo, error) {
 	var infoSlice []*PluginInfo
 	for _, p := range ps {
@@ -259,6 +264,10 @@ func FindPlugin(ctx context.Context, ps []Plugin, name string) (Plugin, error) {
 	return nil, exec.ErrNotFound
 }
 
+// ListPluginFlags returns flags by executing Flags on every plugin.
+//
+// Deprecated: Use ListPluginFlagsForSelection when ps may include discovered
+// external plugins. ListPluginFlags executes every external binary in ps.
 func ListPluginFlags(ctx context.Context, ps []Plugin) ([]PluginSpecificFlag, error) {
 	var out []PluginSpecificFlag
 	for _, p := range ps {
@@ -306,15 +315,29 @@ func HydratePluginOpts(ctx context.Context, ms *xmain.State, plugin Plugin) erro
 		return err
 	}
 	for _, f := range flags {
+		if ms.Opts.Flags.Lookup(f.Name) == nil {
+			opts[f.Tag] = f.Default
+			continue
+		}
+
 		switch f.Type {
 		case "string":
-			val, _ := ms.Opts.Flags.GetString(f.Name)
+			val, err := ms.Opts.Flags.GetString(f.Name)
+			if err != nil {
+				return err
+			}
 			opts[f.Tag] = val
 		case "int64":
-			val, _ := ms.Opts.Flags.GetInt64(f.Name)
+			val, err := ms.Opts.Flags.GetInt64(f.Name)
+			if err != nil {
+				return err
+			}
 			opts[f.Tag] = val
 		case "[]int64":
-			val, _ := ms.Opts.Flags.GetInt64Slice(f.Name)
+			val, err := ms.Opts.Flags.GetInt64Slice(f.Name)
+			if err != nil {
+				return err
+			}
 			opts[f.Tag] = val
 		}
 	}

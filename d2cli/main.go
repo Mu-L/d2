@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"os/user"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -154,9 +155,11 @@ func Run(ctx context.Context, ms *xmain.State) (err error) {
 	if err != nil {
 		return err
 	}
-	selectedLayout := layoutFromArgs(ms.Opts.Args, *layoutFlag)
-	if err := populateLayoutOpts(ctx, ms, plugins, selectedLayout); err != nil {
-		return err
+	selectedLayout, selectionOK := layoutFromArgs(ms.Opts.Args, ms.Opts.Flags, *layoutFlag)
+	if selectionOK {
+		if err := populateLayoutOpts(ctx, ms, plugins, selectedLayout); err != nil {
+			return err
+		}
 	}
 
 	err = ms.Opts.Flags.Parse(ms.Opts.Args)
@@ -402,28 +405,82 @@ func Run(ctx context.Context, ms *xmain.State) (err error) {
 	return nil
 }
 
-func layoutFromArgs(args []string, fallback string) string {
-	layout := fallback
-	for i := 0; i < len(args); i++ {
-		arg := args[i]
-		if arg == "--" {
-			break
+func layoutFromArgs(args []string, baseFlags *pflag.FlagSet, fallback string) (string, bool) {
+	staged := pflag.NewFlagSet("layout selection", pflag.ContinueOnError)
+	staged.SetOutput(io.Discard)
+	staged.Usage = func() {}
+	staged.ParseErrorsAllowlist.UnknownFlags = true
+
+	valid := true
+	baseFlags.VisitAll(func(flag *pflag.Flag) {
+		if !valid {
+			return
 		}
-		switch {
-		case arg == "--layout" || arg == "-l":
-			if i+1 < len(args) {
-				i++
-				layout = args[i]
-			}
-		case strings.HasPrefix(arg, "--layout="):
-			layout = strings.TrimPrefix(arg, "--layout=")
-		case strings.HasPrefix(arg, "-l="):
-			layout = strings.TrimPrefix(arg, "-l=")
-		case strings.HasPrefix(arg, "-l") && len(arg) > len("-l"):
-			layout = strings.TrimPrefix(arg, "-l")
+		value, ok := newStagedFlagValue(flag.Value.Type(), flag.DefValue)
+		if !ok {
+			valid = false
+			return
 		}
+		copy := *flag
+		copy.Value = value
+		copy.Changed = false
+		staged.AddFlag(&copy)
+	})
+	if !valid {
+		return fallback, false
 	}
-	return layout
+	if err := staged.Parse(args); err != nil {
+		// The real parser below will return the authoritative help or usage
+		// result. Most importantly, do not execute a plugin named only in
+		// arguments that pflag would never reach.
+		return fallback, false
+	}
+	layout, err := staged.GetString("layout")
+	if err != nil {
+		return fallback, false
+	}
+	return layout, true
+}
+
+type stagedFlagValue struct {
+	typeName string
+	value    string
+}
+
+func newStagedFlagValue(typeName, value string) (*stagedFlagValue, bool) {
+	v := &stagedFlagValue{typeName: typeName, value: value}
+	if err := v.Set(value); err != nil {
+		return nil, false
+	}
+	return v, true
+}
+
+func (v *stagedFlagValue) Set(value string) error {
+	var err error
+	switch v.typeName {
+	case "string":
+	case "bool":
+		_, err = strconv.ParseBool(value)
+	case "int64":
+		_, err = strconv.ParseInt(value, 0, 64)
+	case "float64":
+		_, err = strconv.ParseFloat(value, 64)
+	default:
+		return fmt.Errorf("unsupported staged flag type %q", v.typeName)
+	}
+	if err != nil {
+		return err
+	}
+	v.value = value
+	return nil
+}
+
+func (v *stagedFlagValue) String() string {
+	return v.value
+}
+
+func (v *stagedFlagValue) Type() string {
+	return v.typeName
 }
 
 func LayoutResolver(ctx context.Context, ms *xmain.State, plugins []d2plugin.Plugin) func(engine string) (d2graph.LayoutGraph, error) {
