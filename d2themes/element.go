@@ -182,40 +182,40 @@ func (el *ThemableElement) Render() string {
 	if color.IsThemeColor(el.Stroke) {
 		class += fmt.Sprintf(" stroke-%s", el.Stroke)
 		if el.inlineTheme != nil {
-			out += fmt.Sprintf(` stroke="%s"`, ResolveThemeColor(*el.inlineTheme, el.Stroke))
+			out += fmt.Sprintf(` stroke="%s"`, svg.EscapeAttribute(ResolveThemeColor(*el.inlineTheme, el.Stroke)))
 		}
 	} else if len(el.Stroke) > 0 {
 		if color.IsGradient(el.Stroke) {
 			el.Stroke = fmt.Sprintf("url('#%s')", color.UniqueGradientID(el.Stroke))
 		}
-		out += fmt.Sprintf(` stroke="%s"`, el.Stroke)
+		out += fmt.Sprintf(` stroke="%s"`, svg.EscapeAttribute(el.Stroke))
 	}
 	if color.IsThemeColor(el.Fill) {
 		class += fmt.Sprintf(" fill-%s", el.Fill)
 		if el.inlineTheme != nil {
-			out += fmt.Sprintf(` fill="%s"`, ResolveThemeColor(*el.inlineTheme, el.Fill))
+			out += fmt.Sprintf(` fill="%s"`, svg.EscapeAttribute(ResolveThemeColor(*el.inlineTheme, el.Fill)))
 		}
 	} else if len(el.Fill) > 0 {
 		if color.IsGradient(el.Fill) {
 			el.Fill = fmt.Sprintf("url('#%s')", color.UniqueGradientID(el.Fill))
 		}
-		out += fmt.Sprintf(` fill="%s"`, el.Fill)
+		out += fmt.Sprintf(` fill="%s"`, svg.EscapeAttribute(el.Fill))
 	}
 	if color.IsThemeColor(el.BackgroundColor) {
 		class += fmt.Sprintf(" background-color-%s", el.BackgroundColor)
 		if el.inlineTheme != nil {
-			out += fmt.Sprintf(` background-color="%s"`, ResolveThemeColor(*el.inlineTheme, el.BackgroundColor))
+			out += fmt.Sprintf(` background-color="%s"`, svg.EscapeAttribute(ResolveThemeColor(*el.inlineTheme, el.BackgroundColor)))
 		}
 	} else if len(el.BackgroundColor) > 0 {
-		out += fmt.Sprintf(` background-color="%s"`, el.BackgroundColor)
+		out += fmt.Sprintf(` background-color="%s"`, svg.EscapeAttribute(el.BackgroundColor))
 	}
 	if color.IsThemeColor(el.Color) {
 		class += fmt.Sprintf(" color-%s", el.Color)
 		if el.inlineTheme != nil {
-			out += fmt.Sprintf(` color="%s"`, ResolveThemeColor(*el.inlineTheme, el.Color))
+			out += fmt.Sprintf(` color="%s"`, svg.EscapeAttribute(ResolveThemeColor(*el.inlineTheme, el.Color)))
 		}
 	} else if len(el.Color) > 0 {
-		out += fmt.Sprintf(` color="%s"`, el.Color)
+		out += fmt.Sprintf(` color="%s"`, svg.EscapeAttribute(el.Color))
 	}
 
 	if len(class) > 0 {
