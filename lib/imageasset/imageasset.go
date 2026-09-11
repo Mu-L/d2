@@ -14,6 +14,8 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/d2lang/d2/lib/netpolicy"
 )
 
 // Preserve imgbundler's worker ceiling so per-resource byte limits also bound
@@ -250,10 +252,14 @@ type Options struct {
 	// value freezes the current working directory at construction time.
 	BaseDir    string
 	HTTPClient *http.Client
-	Cache      Cache
+	// NetworkPolicy defaults to public addresses only. Trusted callers can
+	// explicitly allow private-network assets.
+	NetworkPolicy netpolicy.Policy
+	Cache         Cache
 	// CacheNamespace is required when Cache is set. Reusing a namespace asserts
 	// identical tenant, credentials, CookieJar, redirect policy, transport, and
-	// fetch semantics for every Resolver sharing that cache.
+	// fetch semantics for every Resolver sharing that cache. NetworkPolicy is
+	// automatically included in the effective namespace.
 	CacheNamespace string
 	Limits         Limits
 }
@@ -305,9 +311,17 @@ func New(options Options) (*Resolver, error) {
 		}
 		client = &clone
 	}
+	client, err = netpolicy.NewHTTPClient(client, options.NetworkPolicy)
+	if err != nil {
+		return nil, fmt.Errorf("imageasset: configure HTTP network policy: %w", err)
+	}
 	cachePrefix := ""
 	if options.Cache != nil {
-		namespaceHash := sha256.Sum256([]byte(options.CacheNamespace))
+		networkNamespace := "public-only"
+		if options.NetworkPolicy.AllowPrivateNetworks {
+			networkNamespace = "private-network"
+		}
+		namespaceHash := sha256.Sum256([]byte(options.CacheNamespace + "\x00network-policy:" + networkNamespace))
 		cachePrefix = fmt.Sprintf("namespace:%x:", namespaceHash)
 	}
 	return &Resolver{

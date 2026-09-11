@@ -26,6 +26,8 @@ import (
 	"time"
 
 	"github.com/andybalholm/brotli"
+
+	"github.com/d2lang/d2/lib/netpolicy"
 )
 
 func TestResolveLocalRelativeAbsoluteAndOwnedBytes(t *testing.T) {
@@ -827,6 +829,10 @@ func TestLimitsMustBeCallerSupplied(t *testing.T) {
 
 func newTestResolver(t *testing.T, options Options) *Resolver {
 	t.Helper()
+	// Existing fixtures intentionally use loopback servers and custom in-memory
+	// transports. Tests of the default public-only policy construct a Resolver
+	// directly instead.
+	options.NetworkPolicy = netpolicy.Policy{AllowPrivateNetworks: true}
 	if options.Limits == (Limits{}) {
 		options.Limits = generousLimits()
 	}

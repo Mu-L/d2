@@ -23,6 +23,7 @@ import (
 
 	"github.com/andybalholm/brotli"
 
+	"github.com/d2lang/d2/lib/netpolicy"
 	"github.com/d2lang/d2/lib/simplelog"
 	"github.com/d2lang/d2/lib/svg"
 	"github.com/d2lang/util-go/xdefer"
@@ -35,11 +36,18 @@ const maxImageSize int64 = 1 << 25 // 33_554_432
 var imageRegex = regexp.MustCompile(`<image href="([^"]+)"`)
 
 func BundleLocal(ctx context.Context, l simplelog.Logger, inputPath string, in []byte, cacheImages bool) ([]byte, error) {
-	return bundle(ctx, l, inputPath, in, false, cacheImages)
+	return bundle(ctx, l, inputPath, in, false, cacheImages, netpolicy.Policy{})
 }
 
 func BundleRemote(ctx context.Context, l simplelog.Logger, in []byte, cacheImages bool) ([]byte, error) {
-	return bundle(ctx, l, "", in, true, cacheImages)
+	return BundleRemoteWithPolicy(ctx, l, in, cacheImages, netpolicy.Policy{})
+}
+
+// BundleRemoteWithPolicy bundles HTTP(S) images under policy. The zero policy
+// permits public destinations only; trusted callers may explicitly opt into
+// private-network assets.
+func BundleRemoteWithPolicy(ctx context.Context, l simplelog.Logger, in []byte, cacheImages bool, policy netpolicy.Policy) ([]byte, error) {
+	return bundle(ctx, l, "", in, true, cacheImages, policy)
 }
 
 type repl struct {
@@ -47,7 +55,7 @@ type repl struct {
 	to   []byte
 }
 
-func bundle(ctx context.Context, l simplelog.Logger, inputPath string, svg []byte, isRemote, cacheImages bool) (_ []byte, err error) {
+func bundle(ctx context.Context, l simplelog.Logger, inputPath string, svg []byte, isRemote, cacheImages bool, policy netpolicy.Policy) (_ []byte, err error) {
 	if isRemote {
 		defer xdefer.Errorf(&err, "failed to bundle remote images")
 	} else {
@@ -59,11 +67,18 @@ func bundle(ctx context.Context, l simplelog.Logger, inputPath string, svg []byt
 	if len(imgs) == 0 {
 		return svg, nil
 	}
+	var client *http.Client
+	if isRemote {
+		client, err = netpolicy.NewHTTPClient(httpClient, policy)
+		if err != nil {
+			return svg, err
+		}
+	}
 
 	ctx, cancel := context.WithTimeout(ctx, time.Minute*5)
 	defer cancel()
 
-	return runWorkers(ctx, l, inputPath, svg, imgs, isRemote, cacheImages)
+	return runWorkers(ctx, l, inputPath, svg, imgs, isRemote, cacheImages, client, policy)
 }
 
 // filterImageElements finds all unique image elements in imgs that are
@@ -93,7 +108,7 @@ func filterImageElements(imgs [][][]byte, isRemote bool) [][][]byte {
 	return imgs2
 }
 
-func runWorkers(ctx context.Context, l simplelog.Logger, inputPath string, svg []byte, imgs [][][]byte, isRemote, cacheImages bool) (_ []byte, err error) {
+func runWorkers(ctx context.Context, l simplelog.Logger, inputPath string, svg []byte, imgs [][][]byte, isRemote, cacheImages bool, client *http.Client, policy netpolicy.Policy) (_ []byte, err error) {
 	var wg sync.WaitGroup
 	replc := make(chan repl)
 
@@ -120,7 +135,7 @@ func runWorkers(ctx context.Context, l simplelog.Logger, inputPath string, svg [
 					<-sema
 				}()
 
-				bundledImage, err := worker(ctx, l, inputPath, img[1], isRemote, cacheImages)
+				bundledImage, err := worker(ctx, l, inputPath, img[1], isRemote, cacheImages, client, policy)
 				if err != nil {
 					l.Error(fmt.Sprintf("failed to bundle %s: %v", img[1], err))
 					errhrefsMu.Lock()
@@ -159,9 +174,16 @@ func runWorkers(ctx context.Context, l simplelog.Logger, inputPath string, svg [
 	}
 }
 
-func worker(ctx context.Context, l simplelog.Logger, inputPath string, href []byte, isRemote, cacheImages bool) ([]byte, error) {
+type imageCacheKey struct {
+	href                 string
+	isRemote             bool
+	allowPrivateNetworks bool
+}
+
+func worker(ctx context.Context, l simplelog.Logger, inputPath string, href []byte, isRemote, cacheImages bool, client *http.Client, policy netpolicy.Policy) ([]byte, error) {
+	cacheKey := imageCacheKey{href: string(href), isRemote: isRemote, allowPrivateNetworks: policy.AllowPrivateNetworks}
 	if cacheImages {
-		if hit, ok := imgCache.Load(string(href)); ok {
+		if hit, ok := imgCache.Load(cacheKey); ok {
 			return hit.([]byte), nil
 		}
 	}
@@ -170,7 +192,7 @@ func worker(ctx context.Context, l simplelog.Logger, inputPath string, href []by
 	var err error
 	if isRemote {
 		l.Debug(fmt.Sprintf("fetching %s remotely", string(href)))
-		buf, mimeType, err = httpGet(ctx, l, html.UnescapeString(string(href)))
+		buf, mimeType, err = httpGet(ctx, l, client, html.UnescapeString(string(href)))
 	} else {
 		l.Debug(fmt.Sprintf("reading %s from disk", string(href)))
 		path := html.UnescapeString(string(href))
@@ -199,14 +221,14 @@ func worker(ctx context.Context, l simplelog.Logger, inputPath string, href []by
 
 	out := []byte(fmt.Sprintf(`<image href="%s"`, svg.EscapeText(dataURI)))
 	if cacheImages {
-		imgCache.Store(string(href), out)
+		imgCache.Store(cacheKey, out)
 	}
 	return out, nil
 }
 
 var httpClient = &http.Client{}
 
-func httpGet(ctx context.Context, l simplelog.Logger, href string) ([]byte, string, error) {
+func httpGet(ctx context.Context, l simplelog.Logger, client *http.Client, href string) ([]byte, string, error) {
 	ctx, cancel := context.WithTimeout(ctx, time.Minute)
 	defer cancel()
 
@@ -225,7 +247,7 @@ func httpGet(ctx context.Context, l simplelog.Logger, href string) ([]byte, stri
 	req.Header.Set("Sec-Fetch-Mode", "no-cors")
 	req.Header.Set("Sec-Fetch-Site", "cross-site")
 
-	resp, err := httpClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, "", err
 	}

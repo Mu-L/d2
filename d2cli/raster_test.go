@@ -34,6 +34,7 @@ import (
 	"github.com/d2lang/d2/d2renderers/d2svg"
 	"github.com/d2lang/d2/d2target"
 	"github.com/d2lang/d2/lib/geo"
+	"github.com/d2lang/d2/lib/netpolicy"
 	"github.com/d2lang/d2/lib/pptx"
 	"github.com/d2lang/d2/lib/xgif"
 )
@@ -682,7 +683,7 @@ func TestBundleGIFPreviewUsesResolvedSnapshotAndUnescapesHref(t *testing.T) {
 	if err := os.WriteFile(assetPath, first, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	assetOptions, err := gifSceneAssetOptions(inputPath, false, 1)
+	assetOptions, err := gifSceneAssetOptions(context.Background(), inputPath, false, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -706,7 +707,7 @@ func TestBundleGIFPreviewUsesResolvedSnapshotAndUnescapesHref(t *testing.T) {
 }
 
 func TestBundleGIFPreviewBoundsReferencesAndExpandedOutput(t *testing.T) {
-	assetOptions, err := gifSceneAssetOptions("-", false, 1)
+	assetOptions, err := gifSceneAssetOptions(context.Background(), "-", false, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -721,7 +722,7 @@ func TestBundleGIFPreviewBoundsReferencesAndExpandedOutput(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(directory, "asset.svg"), []byte(largeSVG), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	assetOptions, err = gifSceneAssetOptions(inputPath, false, 1)
+	assetOptions, err = gifSceneAssetOptions(context.Background(), inputPath, false, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -871,7 +872,7 @@ func TestGIFSharesOperationAssetResolverAcrossBoards(t *testing.T) {
 	root := rasterImageDiagram(assetURL)
 	root.Layers = []*d2target.Diagram{rasterImageDiagram(assetURL)}
 	frames, _, err := renderGIFFramesForTest(
-		context.Background(),
+		trustedAssetContext(),
 		nil,
 		"-",
 		false,
@@ -886,6 +887,10 @@ func TestGIFSharesOperationAssetResolverAcrossBoards(t *testing.T) {
 	if len(frames) != 2 || requests.Load() != 1 {
 		t.Fatalf("shared GIF frames/asset requests = %d/%d, want 2/1", len(frames), requests.Load())
 	}
+}
+
+func trustedAssetContext() context.Context {
+	return netpolicy.WithPolicy(context.Background(), netpolicy.Policy{AllowPrivateNetworks: true})
 }
 
 func TestGIFDividesOperationWorkBudgets(t *testing.T) {
@@ -1109,14 +1114,14 @@ func TestRenderPNGUsesPlaceholderForUnavailableImage(t *testing.T) {
 	diagram := rasterImageDiagram(assetURL)
 	diagram.Shapes[0].Width = 64
 	diagram.Shapes[0].Height = 64
-	encoded, err := renderPNGWithEncoder(context.Background(), "-", true, diagram, d2svg.RenderOpts{
+	encoded, err := renderPNGWithEncoder(trustedAssetContext(), "-", true, diagram, d2svg.RenderOpts{
 		Pad: go2.Pointer(int64(0)), Scale: go2.Pointer(1.0),
 	}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	assertPNGPixel(t, encoded, 32, 56, color.NRGBA{R: 0xb8, G: 0xd7, B: 0xf2, A: 0xff})
-	second, err := renderPNGWithEncoder(context.Background(), "-", true, diagram, d2svg.RenderOpts{
+	second, err := renderPNGWithEncoder(trustedAssetContext(), "-", true, diagram, d2svg.RenderOpts{
 		Pad: go2.Pointer(int64(0)), Scale: go2.Pointer(1.0),
 	}, nil)
 	if err != nil {
@@ -1143,13 +1148,13 @@ func TestRenderPNGPreservesRemoteImageCacheBehavior(t *testing.T) {
 	}
 	diagram := rasterImageDiagram(assetURL)
 	options := d2svg.RenderOpts{Pad: go2.Pointer(int64(0)), Scale: go2.Pointer(1.0)}
-	first, err := renderPNGWithEncoder(context.Background(), "-", true, diagram, options, nil)
+	first, err := renderPNGWithEncoder(trustedAssetContext(), "-", true, diagram, options, nil)
 	if err != nil {
 		server.Close()
 		t.Fatal(err)
 	}
 	server.Close()
-	second, err := renderPNGWithEncoder(context.Background(), "-", true, diagram, options, nil)
+	second, err := renderPNGWithEncoder(trustedAssetContext(), "-", true, diagram, options, nil)
 	if err != nil {
 		t.Fatalf("cached render after origin shutdown: %v", err)
 	}
@@ -1185,7 +1190,7 @@ func TestRenderPNGReusesRemoteConnectionsWithoutImageCache(t *testing.T) {
 	diagram := rasterImageDiagram(assetURL)
 	options := d2svg.RenderOpts{Pad: go2.Pointer(int64(0)), Scale: go2.Pointer(1.0)}
 	for render := 0; render < 3; render++ {
-		if _, err := renderPNGWithEncoder(context.Background(), "-", false, diagram, options, nil); err != nil {
+		if _, err := renderPNGWithEncoder(trustedAssetContext(), "-", false, diagram, options, nil); err != nil {
 			t.Fatalf("uncached render %d: %v", render+1, err)
 		}
 	}
@@ -1216,7 +1221,7 @@ func TestAssetBudgetsReserveFontsAndBoundEverySVGDimension(t *testing.T) {
 	if pagedRenderCacheBytes <= rasterMaxDecodedBytes+fontAssetByteReserve+imageAssetMaxBytes {
 		t.Fatalf("paged cache budget %d does not exceed decoded %d + fonts %d + image key %d", pagedRenderCacheBytes, rasterMaxDecodedBytes, fontAssetByteReserve, imageAssetMaxBytes)
 	}
-	options, err := sceneAssetOptions("-", false)
+	options, err := sceneAssetOptions(context.Background(), "-", false)
 	if err != nil {
 		t.Fatal(err)
 	}
