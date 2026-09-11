@@ -86,6 +86,9 @@ func Compile(ast *d2ast.Map, opts *CompileOptions) (*Map, []string, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, nil, err
+	}
 	c := &compiler{
 		err: &d2parser.ParseError{},
 		ctx: ctx,
@@ -110,6 +113,9 @@ func Compile(ast *d2ast.Map, opts *CompileOptions) (*Map, []string, error) {
 	c.compileSubstitutions(m, nil)
 	c.overlayClasses(m)
 	m.removeSuspendedFields()
+	if err := ctx.Err(); err != nil {
+		return nil, nil, err
+	}
 	if !c.err.Empty() {
 		return nil, nil, c.err
 	}
