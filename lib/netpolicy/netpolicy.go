@@ -51,16 +51,21 @@ type ipResolver interface {
 // NewHTTPClient clones base and applies policy without mutating the caller's
 // client or transport. Public-only clients resolve each hostname themselves,
 // reject the entire resolution if any address is non-public, and pass only a
-// validated numeric address to the transport dialer. This prevents redirects
-// and DNS rebinding from bypassing the policy.
+// validated numeric address to a policy-owned transport dialer. Caller proxy,
+// dial, and alternate-protocol hooks are not retained. Every new connection
+// resolves and validates its destination, so redirects and DNS rebinding cannot
+// bypass the policy.
 //
 // A public-only client requires a standard *http.Transport. Custom protocol
 // RoundTrippers can opt into trusted private-network behavior explicitly.
 func NewHTTPClient(base *http.Client, policy Policy) (*http.Client, error) {
-	return newHTTPClient(base, policy, net.DefaultResolver)
+	dialer := &net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}
+	return newHTTPClient(base, policy, net.DefaultResolver, dialer.DialContext)
 }
 
-func newHTTPClient(base *http.Client, policy Policy, resolver ipResolver) (*http.Client, error) {
+// newHTTPClient keeps resolver and dial injection unexported for deterministic
+// tests. NewHTTPClient always supplies a package-owned net.Dialer.
+func newHTTPClient(base *http.Client, policy Policy, resolver ipResolver, policyDial dialContextFunc) (*http.Client, error) {
 	if base == nil {
 		base = &http.Client{}
 	}
@@ -74,6 +79,8 @@ func newHTTPClient(base *http.Client, policy Policy, resolver ipResolver) (*http
 	case nil:
 		transport = defaultTransport()
 	case *http.Transport:
+		// Clone copies exported configuration but deliberately excludes live
+		// connection pools and handlers installed with RegisterProtocol.
 		transport = baseTransport.Clone()
 	default:
 		return nil, fmt.Errorf("public-only network policy requires *http.Transport, got %T", client.Transport)
@@ -83,15 +90,23 @@ func newHTTPClient(base *http.Client, policy Policy, resolver ipResolver) (*http
 	// boundary, so it cannot uphold the public-only policy. Trusted proxy users
 	// can explicitly opt into private-network behavior.
 	transport.Proxy = nil
-	baseDial := transport.DialContext
-	if baseDial == nil {
-		dialer := &net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}
-		baseDial = dialer.DialContext
+	transport.OnProxyConnectResponse = nil
+	transport.GetProxyConnectHeader = nil
+	transport.ProxyConnectHeader = nil
+	if resolver == nil || policyDial == nil {
+		return nil, errors.New("public-only network policy requires its resolver and dialer")
 	}
-	transport.DialContext = validatedDialContext(resolver, baseDial)
+	// Never delegate a validated numeric destination to caller-provided dial
+	// hooks: a hook can ignore that destination and connect to a private address.
+	transport.Dial = nil
+	transport.DialContext = validatedDialContext(resolver, policyDial)
 	// Either hook bypasses DialContext for HTTPS.
 	transport.DialTLS = nil
 	transport.DialTLSContext = nil
+	// A caller-provided TLSNextProto callback is an arbitrary RoundTripper and
+	// can create connections outside DialContext. Clearing it still permits the
+	// standard library to configure its built-in HTTP/2 implementation.
+	transport.TLSNextProto = nil
 	client.Transport = transport
 	return &client, nil
 }
