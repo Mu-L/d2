@@ -1,6 +1,7 @@
 package d2ir
 
 import (
+	"context"
 	"html"
 	"io/fs"
 	"net/url"
@@ -30,6 +31,7 @@ type globContext struct {
 
 type compiler struct {
 	err *d2parser.ParseError
+	ctx context.Context
 
 	fs      fs.FS
 	imports []string
@@ -64,6 +66,9 @@ type compiler struct {
 }
 
 type CompileOptions struct {
+	// Context stops parsing imported files when canceled. A nil Context is
+	// treated as context.Background().
+	Context  context.Context
 	UTF16Pos bool
 	// Pass nil to disable imports.
 	FS fs.FS
@@ -77,8 +82,13 @@ func Compile(ast *d2ast.Map, opts *CompileOptions) (*Map, []string, error) {
 	if opts == nil {
 		opts = &CompileOptions{}
 	}
+	ctx := opts.Context
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	c := &compiler{
 		err: &d2parser.ParseError{},
+		ctx: ctx,
 		fs:  opts.FS,
 
 		seenImports:     make(map[string]struct{}),

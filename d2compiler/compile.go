@@ -1,6 +1,7 @@
 package d2compiler
 
 import (
+	"context"
 	"encoding/xml"
 	"fmt"
 	"html"
@@ -25,6 +26,9 @@ import (
 )
 
 type CompileOptions struct {
+	// Context stops parsing when canceled. A nil Context is treated as
+	// context.Background().
+	Context  context.Context
 	UTF16Pos bool
 	// FS is the file system used for resolving imports in the d2 text.
 	// It should correspond to the root path.
@@ -36,7 +40,7 @@ func Compile(p string, r io.Reader, opts *CompileOptions) (*d2graph.Graph, *d2ta
 		opts = &CompileOptions{}
 	}
 
-	ast, err := d2parser.Parse(p, r, &d2parser.ParseOptions{
+	ast, err := d2parser.ParseContext(opts.Context, p, r, &d2parser.ParseOptions{
 		UTF16Pos: opts.UTF16Pos,
 	})
 	if err != nil {
@@ -44,6 +48,7 @@ func Compile(p string, r io.Reader, opts *CompileOptions) (*d2graph.Graph, *d2ta
 	}
 
 	ir, _, err := d2ir.Compile(ast, &d2ir.CompileOptions{
+		Context:  opts.Context,
 		UTF16Pos: opts.UTF16Pos,
 		FS:       opts.FS,
 	})

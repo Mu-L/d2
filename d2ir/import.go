@@ -207,7 +207,7 @@ func (c *compiler) loadImportAST(impPath string, parseErr *d2parser.ParseError) 
 	}
 	defer f.Close()
 
-	ast, err := d2parser.Parse(impPath, f, &d2parser.ParseOptions{
+	ast, err := d2parser.ParseContext(c.ctx, impPath, f, &d2parser.ParseOptions{
 		UTF16Pos:   c.utf16Pos,
 		ParseError: parseErr,
 	})
