@@ -463,7 +463,7 @@ func TestInlineRemoteContentTypeIsSafeAndCanonical(t *testing.T) {
 				return respRecorder.Result()
 			})
 
-			out, err := BundleRemote(ctx, simplelog.FromLibLog(ctx), sampleSVG, false)
+			out, err := bundleRemoteForTest(ctx, simplelog.FromLibLog(ctx), sampleSVG, false)
 			if err != nil {
 				t.Fatal(err)
 			}
