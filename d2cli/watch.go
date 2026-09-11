@@ -2,8 +2,11 @@ package d2cli
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/subtle"
 	"embed"
 	_ "embed"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -86,7 +89,12 @@ type watcher struct {
 
 	resMu sync.Mutex
 	res   *compileResult
+
+	accessToken      string
+	accessCookieName string
 }
+
+const watchAccessTokenBytes = 32
 
 type compileResult struct {
 	SVG   string   `json:"svg"`
@@ -96,6 +104,11 @@ type compileResult struct {
 
 func newWatcher(ctx context.Context, ms *xmain.State, opts watcherOpts) (*watcher, error) {
 	ctx, cancel := context.WithCancel(ctx)
+	accessToken, err := newWatchAccessToken()
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("failed to generate watch access token: %w", err)
+	}
 
 	w := &watcher{
 		ctx:     ctx,
@@ -107,12 +120,22 @@ func newWatcher(ctx context.Context, ms *xmain.State, opts watcherOpts) (*watche
 
 		compileCh: make(chan struct{}, 1),
 		wsclients: make(map[*wsclient]struct{}),
+
+		accessToken: accessToken,
 	}
-	err := w.init()
+	err = w.init()
 	if err != nil {
 		return nil, err
 	}
 	return w, nil
+}
+
+func newWatchAccessToken() (string, error) {
+	b := make([]byte, watchAccessTokenBytes)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(b), nil
 }
 
 func (w *watcher) init() error {
@@ -457,7 +480,7 @@ func (w *watcher) compileLoop(ctx context.Context) error {
 
 		if firstCompile {
 			firstCompile = false
-			url := fmt.Sprintf("http://%s", w.l.Addr())
+			url := w.accessURL("/")
 			err = xbrowser.Open(ctx, w.ms.Env, url)
 			if err != nil {
 				w.ms.Log.Warn.Printf("failed to open browser to %v: %v", url, err)
@@ -472,8 +495,18 @@ func (w *watcher) listen() error {
 		return err
 	}
 	w.l = l
-	w.ms.Log.Success.Printf("listening on http://%v", w.l.Addr())
+	_, port, err := net.SplitHostPort(w.l.Addr().String())
+	if err != nil {
+		_ = w.l.Close()
+		return fmt.Errorf("failed to determine watch listener port: %w", err)
+	}
+	w.accessCookieName = "d2-watch-" + port
+	w.ms.Log.Success.Printf("listening on %s", w.accessURL("/"))
 	return nil
+}
+
+func (w *watcher) accessURL(path string) string {
+	return fmt.Sprintf("http://%s%s?token=%s", w.l.Addr(), path, w.accessToken)
 }
 
 func (w *watcher) goServe() error {
@@ -484,12 +517,58 @@ func (w *watcher) goServe() error {
 	m.Handle("/static/", http.StripPrefix("/static", w.staticFileServer))
 	m.Handle("/watch", xhttp.HandlerFuncAdapter{Log: w.ms.Log, Func: w.handleWatch})
 
-	s := xhttp.NewServer(w.ms.Log.Warn, xhttp.Log(w.ms.Log, m))
+	logged := xhttp.Log(w.ms.Log, m)
+	authenticated := http.HandlerFunc(func(hw http.ResponseWriter, r *http.Request) {
+		if w.authorizeRequest(hw, r) {
+			logged.ServeHTTP(hw, r)
+		}
+	})
+	s := xhttp.NewServer(w.ms.Log.Warn, authenticated)
 	w.goFunc(func(ctx context.Context) error {
 		return xhttp.Serve(ctx, time.Second*30, s, w.l)
 	})
 
 	return nil
+}
+
+func (w *watcher) authorizeRequest(hw http.ResponseWriter, r *http.Request) bool {
+	query := r.URL.Query()
+	if query.Has("token") {
+		if !constantTimeTokenEqual(query.Get("token"), w.accessToken) {
+			http.Error(hw, "watch access denied", http.StatusForbidden)
+			return false
+		}
+
+		hw.Header().Set("Cache-Control", "no-store")
+		hw.Header().Set("Referrer-Policy", "no-referrer")
+		http.SetCookie(hw, &http.Cookie{
+			Name:     w.accessCookieName,
+			Value:    w.accessToken,
+			Path:     "/",
+			HttpOnly: true,
+			SameSite: http.SameSiteStrictMode,
+		})
+		query.Del("token")
+		redirect := *r.URL
+		redirect.Scheme = ""
+		redirect.Host = ""
+		redirect.RawPath = ""
+		redirect.Path = "/" + strings.TrimLeft(redirect.Path, "/")
+		redirect.RawQuery = query.Encode()
+		http.Redirect(hw, r, redirect.String(), http.StatusSeeOther)
+		return false
+	}
+
+	if cookie, err := r.Cookie(w.accessCookieName); err == nil &&
+		constantTimeTokenEqual(cookie.Value, w.accessToken) {
+		return true
+	}
+	http.Error(hw, "watch access denied", http.StatusForbidden)
+	return false
+}
+
+func constantTimeTokenEqual(provided, expected string) bool {
+	return len(provided) == len(expected) && subtle.ConstantTimeCompare([]byte(provided), []byte(expected)) == 1
 }
 
 func (w *watcher) getRes() *compileResult {
