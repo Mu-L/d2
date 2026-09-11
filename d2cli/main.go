@@ -40,6 +40,7 @@ import (
 	"github.com/d2lang/d2/d2themes/d2themescatalog"
 	"github.com/d2lang/d2/lib/background"
 	"github.com/d2lang/d2/lib/imgbundler"
+	"github.com/d2lang/d2/lib/localfile"
 	"github.com/d2lang/d2/lib/log"
 	"github.com/d2lang/d2/lib/netpolicy"
 	"github.com/d2lang/d2/lib/pdf"
@@ -418,7 +419,9 @@ func Run(ctx context.Context, ms *xmain.State) (err error) {
 		ms.Log.Debug.Printf("GIF export: animate-interval not specified, defaulting to 1000ms")
 	}
 
-	_, written, err := compile(ctx, ms, plugins, nil, layoutFlag, renderOpts, fontFamily, monoFontFamily, animateInterval, inputPath, outputPath, boardPath, noChildren, *bundleFlag, *forceAppendixFlag, outputFormat, *asciiModeFlag, false)
+	// The CLI is a trusted local application and intentionally preserves its
+	// historical ability to import arbitrary host files.
+	_, written, err := compile(ctx, ms, plugins, localfile.Unrestricted(), layoutFlag, renderOpts, fontFamily, monoFontFamily, animateInterval, inputPath, outputPath, boardPath, noChildren, *bundleFlag, *forceAppendixFlag, outputFormat, *asciiModeFlag, false)
 	if err != nil {
 		if written {
 			return fmt.Errorf("failed to fully compile (partial render written) %s: %w", ms.HumanPath(inputPath), err)
@@ -1223,7 +1226,7 @@ func _renderWithPNGEncoder(ctx context.Context, ms *xmain.State, plugin d2plugin
 
 	cacheImages := ms.Env.Getenv("IMG_CACHE") == "1"
 	l := simplelog.FromCmdLog(ms.Log)
-	svg, bundleErr := imgbundler.BundleLocal(ctx, l, inputPath, svg, cacheImages)
+	svg, bundleErr := imgbundler.BundleLocalWithPolicy(ctx, l, inputPath, svg, localfile.Unrestricted(), cacheImages)
 	if bundle {
 		var bundleErr2 error
 		svg, bundleErr2 = imgbundler.BundleRemoteWithPolicy(ctx, l, svg, cacheImages, netpolicy.FromContext(ctx))

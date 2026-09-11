@@ -2,6 +2,7 @@ package d2compiler_test
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -17,6 +18,17 @@ import (
 	"github.com/d2lang/d2/d2graph"
 	"github.com/d2lang/d2/d2target"
 )
+
+func TestNilFSDeniesImports(t *testing.T) {
+	directory := t.TempDir()
+	if err := os.WriteFile(filepath.Join(directory, "secret.d2"), []byte("disclosed"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err := d2compiler.Compile(filepath.Join(directory, "index.d2"), strings.NewReader("...@secret"), nil)
+	if err == nil || !strings.Contains(err.Error(), "imports are disabled") {
+		t.Fatalf("Compile error = %v, want imports-disabled error", err)
+	}
+}
 
 func TestOpacityValidation(t *testing.T) {
 	t.Parallel()

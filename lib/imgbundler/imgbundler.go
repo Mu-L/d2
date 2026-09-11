@@ -7,13 +7,13 @@ import (
 	"compress/zlib"
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"html"
 	"io"
 	"mime"
 	"net/http"
 	"net/url"
-	"os"
 	"path"
 	"path/filepath"
 	"regexp"
@@ -23,6 +23,7 @@ import (
 
 	"github.com/andybalholm/brotli"
 
+	"github.com/d2lang/d2/lib/localfile"
 	"github.com/d2lang/d2/lib/netpolicy"
 	"github.com/d2lang/d2/lib/simplelog"
 	"github.com/d2lang/d2/lib/svg"
@@ -35,8 +36,17 @@ const maxImageSize int64 = 1 << 25 // 33_554_432
 
 var imageRegex = regexp.MustCompile(`<image href="([^"]+)"`)
 
+// BundleLocal bundles local image references using the deny-by-default local
+// file policy. Call BundleLocalWithPolicy to deliberately permit local files.
 func BundleLocal(ctx context.Context, l simplelog.Logger, inputPath string, in []byte, cacheImages bool) ([]byte, error) {
-	return bundle(ctx, l, inputPath, in, false, cacheImages, netpolicy.Policy{})
+	return BundleLocalWithPolicy(ctx, l, inputPath, in, localfile.Policy{}, cacheImages)
+}
+
+// BundleLocalWithPolicy bundles local image references allowed by localFiles.
+// Use localfile.Rooted for untrusted input. localfile.Unrestricted is intended
+// only for trusted local applications such as the D2 command-line interface.
+func BundleLocalWithPolicy(ctx context.Context, l simplelog.Logger, inputPath string, in []byte, localFiles localfile.Policy, cacheImages bool) ([]byte, error) {
+	return bundle(ctx, l, inputPath, in, localFiles, false, cacheImages, netpolicy.Policy{})
 }
 
 func BundleRemote(ctx context.Context, l simplelog.Logger, in []byte, cacheImages bool) ([]byte, error) {
@@ -47,7 +57,7 @@ func BundleRemote(ctx context.Context, l simplelog.Logger, in []byte, cacheImage
 // permits public destinations only; trusted callers may explicitly opt into
 // private-network assets.
 func BundleRemoteWithPolicy(ctx context.Context, l simplelog.Logger, in []byte, cacheImages bool, policy netpolicy.Policy) ([]byte, error) {
-	return bundle(ctx, l, "", in, true, cacheImages, policy)
+	return bundle(ctx, l, "", in, localfile.Policy{}, true, cacheImages, policy)
 }
 
 type repl struct {
@@ -55,7 +65,7 @@ type repl struct {
 	to   []byte
 }
 
-func bundle(ctx context.Context, l simplelog.Logger, inputPath string, svg []byte, isRemote, cacheImages bool, policy netpolicy.Policy) (_ []byte, err error) {
+func bundle(ctx context.Context, l simplelog.Logger, inputPath string, svg []byte, localFiles localfile.Policy, isRemote, cacheImages bool, policy netpolicy.Policy) (_ []byte, err error) {
 	if isRemote {
 		defer xdefer.Errorf(&err, "failed to bundle remote images")
 	} else {
@@ -78,7 +88,7 @@ func bundle(ctx context.Context, l simplelog.Logger, inputPath string, svg []byt
 	ctx, cancel := context.WithTimeout(ctx, time.Minute*5)
 	defer cancel()
 
-	return runWorkers(ctx, l, inputPath, svg, imgs, isRemote, cacheImages, client, policy)
+	return runWorkers(ctx, l, inputPath, svg, imgs, localFiles, isRemote, cacheImages, client, policy)
 }
 
 // filterImageElements finds all unique image elements in imgs that are
@@ -108,7 +118,7 @@ func filterImageElements(imgs [][][]byte, isRemote bool) [][][]byte {
 	return imgs2
 }
 
-func runWorkers(ctx context.Context, l simplelog.Logger, inputPath string, svg []byte, imgs [][][]byte, isRemote, cacheImages bool, client *http.Client, policy netpolicy.Policy) (_ []byte, err error) {
+func runWorkers(ctx context.Context, l simplelog.Logger, inputPath string, svg []byte, imgs [][][]byte, localFiles localfile.Policy, isRemote, cacheImages bool, client *http.Client, policy netpolicy.Policy) (_ []byte, err error) {
 	var wg sync.WaitGroup
 	replc := make(chan repl)
 
@@ -135,7 +145,7 @@ func runWorkers(ctx context.Context, l simplelog.Logger, inputPath string, svg [
 					<-sema
 				}()
 
-				bundledImage, err := worker(ctx, l, inputPath, img[1], isRemote, cacheImages, client, policy)
+				bundledImage, err := worker(ctx, l, inputPath, img[1], localFiles, isRemote, cacheImages, client, policy)
 				if err != nil {
 					l.Error(fmt.Sprintf("failed to bundle %s: %v", img[1], err))
 					errhrefsMu.Lock()
@@ -178,10 +188,23 @@ type imageCacheKey struct {
 	href                 string
 	isRemote             bool
 	allowPrivateNetworks bool
+	localPolicyKey       string
 }
 
-func worker(ctx context.Context, l simplelog.Logger, inputPath string, href []byte, isRemote, cacheImages bool, client *http.Client, policy netpolicy.Policy) ([]byte, error) {
+func worker(ctx context.Context, l simplelog.Logger, inputPath string, href []byte, localFiles localfile.Policy, isRemote, cacheImages bool, client *http.Client, policy netpolicy.Policy) ([]byte, error) {
 	cacheKey := imageCacheKey{href: string(href), isRemote: isRemote, allowPrivateNetworks: policy.AllowPrivateNetworks}
+	localPath := ""
+	if !isRemote {
+		localPath = html.UnescapeString(string(href))
+		if inputPath != "-" && !filepath.IsAbs(localPath) {
+			localPath = filepath.Join(filepath.Dir(inputPath), localPath)
+		}
+		policyKey, err := localFiles.CacheKey(localPath)
+		if err != nil {
+			return nil, err
+		}
+		cacheKey.localPolicyKey = policyKey
+	}
 	if cacheImages {
 		if hit, ok := imgCache.Load(cacheKey); ok {
 			return hit.([]byte), nil
@@ -195,11 +218,7 @@ func worker(ctx context.Context, l simplelog.Logger, inputPath string, href []by
 		buf, mimeType, err = httpGet(ctx, l, client, html.UnescapeString(string(href)))
 	} else {
 		l.Debug(fmt.Sprintf("reading %s from disk", string(href)))
-		path := html.UnescapeString(string(href))
-		if inputPath != "-" && !filepath.IsAbs(path) {
-			path = filepath.Join(filepath.Dir(inputPath), path)
-		}
-		buf, err = os.ReadFile(path)
+		buf, err = readLocal(ctx, localFiles, localPath)
 	}
 	if err != nil {
 		return nil, err
@@ -224,6 +243,42 @@ func worker(ctx context.Context, l simplelog.Logger, inputPath string, href []by
 		imgCache.Store(cacheKey, out)
 	}
 	return out, nil
+}
+
+func readLocal(ctx context.Context, localFiles localfile.Policy, filePath string) (_ []byte, err error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	file, err := localFiles.Open(filePath)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if closeErr := file.Close(); closeErr != nil {
+			err = errors.Join(err, fmt.Errorf("close local image %q: %w", filePath, closeErr))
+		}
+	}()
+	info, err := file.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("stat local image %q: %w", filePath, err)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("local image %q is not a regular file", filePath)
+	}
+	if info.Size() > maxImageSize {
+		return nil, fmt.Errorf("local image exceeds maximum size of %d bytes", maxImageSize)
+	}
+	buf, err := io.ReadAll(io.LimitReader(file, maxImageSize+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(buf)) > maxImageSize {
+		return nil, fmt.Errorf("local image exceeds maximum size of %d bytes", maxImageSize)
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return buf, nil
 }
 
 var httpClient = &http.Client{}

@@ -1,8 +1,7 @@
 package d2ir
 
 import (
-	"io/fs"
-	"os"
+	"errors"
 	"path"
 	"path/filepath"
 	"strings"
@@ -10,6 +9,10 @@ import (
 	"github.com/d2lang/d2/d2ast"
 	"github.com/d2lang/d2/d2parser"
 )
+
+// ErrImportsDisabled is returned when D2 source requests an import but the
+// caller did not provide CompileOptions.FS.
+var ErrImportsDisabled = errors.New("d2ir: imports are disabled; provide CompileOptions.FS to enable them")
 
 func (c *compiler) pushImportStack(imp *d2ast.Import) (string, bool) {
 	impPath := imp.PathWithPre()
@@ -195,13 +198,10 @@ func (c *compiler) loadImportAST(impPath string, parseErr *d2parser.ParseError) 
 		return cloneASTMap(ast), nil, true
 	}
 
-	var f fs.File
-	var err error
 	if c.fs == nil {
-		f, err = os.Open(impPath)
-	} else {
-		f, err = c.fs.Open(impPath)
+		return nil, ErrImportsDisabled, false
 	}
+	f, err := c.fs.Open(impPath)
 	if err != nil {
 		return nil, err, false
 	}

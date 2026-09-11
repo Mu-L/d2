@@ -22,6 +22,7 @@ import (
 	tassert "github.com/stretchr/testify/assert"
 
 	"github.com/d2lang/d2/internal/testlog"
+	"github.com/d2lang/d2/lib/localfile"
 	"github.com/d2lang/d2/lib/log"
 	"github.com/d2lang/d2/lib/netpolicy"
 	"github.com/d2lang/d2/lib/simplelog"
@@ -209,7 +210,7 @@ width="328" height="587" viewBox="-100 -131 328 587"><style type="text/css">
 
 	l := simplelog.FromLibLog(ctx)
 	// It doesn't matter what the inputPath is for absolute paths
-	out, err := BundleLocal(ctx, l, "asdf", []byte(sampleSVG), false)
+	out, err := BundleLocalWithPolicy(ctx, l, "asdf", []byte(sampleSVG), localfile.Unrestricted(), false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -241,7 +242,7 @@ width="328" height="587" viewBox="-100 -131 328 587"><style type="text/css">
 	)
 
 	// Bogus directory not found
-	_, err = BundleLocal(ctx, l, "asdf/asdf/asdf", []byte(sampleSVG), false)
+	_, err = BundleLocalWithPolicy(ctx, l, "asdf/asdf/asdf", []byte(sampleSVG), localfile.Unrestricted(), false)
 	if err == nil {
 		t.Fatal("Expected error for invalid input path")
 	}
@@ -250,7 +251,7 @@ width="328" height="587" viewBox="-100 -131 328 587"><style type="text/css">
 	}
 
 	// - is ignored
-	_, err = BundleLocal(ctx, l, "-", []byte(sampleSVG), false)
+	_, err = BundleLocalWithPolicy(ctx, l, "-", []byte(sampleSVG), localfile.Unrestricted(), false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -259,7 +260,7 @@ width="328" height="587" viewBox="-100 -131 328 587"><style type="text/css">
 	sampleSVG = fmt.Sprintf(template, svgURL, pngURL)
 
 	// correct relative path
-	_, err = BundleLocal(ctx, l, "./nested/a.d2", []byte(sampleSVG), false)
+	_, err = BundleLocalWithPolicy(ctx, l, "./nested/a.d2", []byte(sampleSVG), localfile.Unrestricted(), false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -462,7 +463,7 @@ func TestInlineRemoteContentTypeIsSafeAndCanonical(t *testing.T) {
 				return respRecorder.Result()
 			})
 
-			out, err := BundleRemote(ctx, simplelog.FromLibLog(ctx), sampleSVG, false)
+			out, err := bundleRemoteForTest(ctx, simplelog.FromLibLog(ctx), sampleSVG, false)
 			if err != nil {
 				t.Fatal(err)
 			}
