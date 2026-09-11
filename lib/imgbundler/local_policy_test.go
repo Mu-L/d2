@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-	"sync"
 	"testing"
 
 	"github.com/d2lang/d2/internal/testlog"
@@ -155,7 +154,7 @@ func writeLocalPolicyImage(t *testing.T, directory, name, contents string) strin
 
 func localPolicyContext(t *testing.T) context.Context {
 	t.Helper()
-	imgCache = sync.Map{}
+	imgCache = newImageCache(maxImageCacheEntries, maxImageCacheBytes)
 	return log.With(context.Background(), testlog.New(t))
 }
 
