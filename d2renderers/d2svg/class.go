@@ -21,7 +21,7 @@ func classHeader(diagramHash string, shape d2target.Shape, box *geo.Box, text st
 	rectEl.FillPattern = shape.FillPattern
 	rectEl.ClassName = "class_header"
 	if shape.BorderRadius != 0 {
-		rectEl.ClipPath = fmt.Sprintf("%v-%v", diagramHash, shape.ID)
+		rectEl.ClipPath = borderRadiusClipPathID(diagramHash, shape.ID)
 	}
 	str := rectEl.Render()
 

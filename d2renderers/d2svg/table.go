@@ -22,7 +22,7 @@ func clipPathForBorderRadius(diagramHash string, shape d2target.Shape) string {
 	)
 	topX, topY := box.TopLeft.X+box.Width, box.TopLeft.Y
 
-	out := fmt.Sprintf(`<clipPath id="%v-%v">`, diagramHash, svg.SVGID(shape.ID))
+	out := fmt.Sprintf(`<clipPath id="%s">`, svg.EscapeText(borderRadiusClipPathID(diagramHash, shape.ID)))
 	out += fmt.Sprintf(`<path d="M %s %s L %s %s S %s %s %s %s `, svg.FormatFloat(box.TopLeft.X), svg.FormatFloat(box.TopLeft.Y+float64(shape.BorderRadius)), svg.FormatFloat(box.TopLeft.X), svg.FormatFloat(box.TopLeft.Y+float64(shape.BorderRadius)), svg.FormatFloat(box.TopLeft.X), svg.FormatFloat(box.TopLeft.Y), svg.FormatFloat(box.TopLeft.X+float64(shape.BorderRadius)), svg.FormatFloat(box.TopLeft.Y))
 	out += fmt.Sprintf(`L %s %s L %s %s `, svg.FormatFloat(box.TopLeft.X+box.Width-float64(shape.BorderRadius)), svg.FormatFloat(box.TopLeft.Y), svg.FormatFloat(topX-float64(shape.BorderRadius)), svg.FormatFloat(topY))
 
@@ -41,6 +41,10 @@ func clipPathForBorderRadius(diagramHash string, shape d2target.Shape) string {
 	return out + `fill="none" /> </clipPath>`
 }
 
+func borderRadiusClipPathID(diagramHash, shapeID string) string {
+	return fmt.Sprintf("%s-%s", diagramHash, svg.SVGID(shapeID))
+}
+
 func tableHeader(diagramHash string, shape d2target.Shape, box *geo.Box, text string, textWidth, textHeight, fontSize float64, inlineTheme *d2themes.Theme) string {
 	rectEl := d2themes.NewThemableElement("rect", inlineTheme)
 	rectEl.X, rectEl.Y = box.TopLeft.X, box.TopLeft.Y
@@ -49,7 +53,7 @@ func tableHeader(diagramHash string, shape d2target.Shape, box *geo.Box, text st
 	rectEl.FillPattern = shape.FillPattern
 	rectEl.ClassName = "class_header"
 	if shape.BorderRadius != 0 {
-		rectEl.ClipPath = fmt.Sprintf("%v-%v", diagramHash, shape.ID)
+		rectEl.ClipPath = borderRadiusClipPathID(diagramHash, shape.ID)
 	}
 	str := rectEl.Render()
 
