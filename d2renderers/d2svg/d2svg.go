@@ -1081,7 +1081,7 @@ func drawConnection(writer io.Writer, diagramHash string, connection d2target.Co
 
 	classes := []string{base64.URLEncoding.EncodeToString([]byte(svg.EscapeText(connection.ID)))}
 	classes = append(classes, connection.Classes...)
-	classStr := fmt.Sprintf(` class="%s"`, strings.Join(classes, " "))
+	classStr := renderClassAttr(classes)
 
 	fmt.Fprintf(writer, `<g%s%s>`, classStr, opacityStyle)
 	var markerStart string
@@ -1366,6 +1366,10 @@ func drawConnection(writer io.Writer, diagramHash string, connection d2target.Co
 	}
 	fmt.Fprintf(writer, `</g>`)
 	return
+}
+
+func renderClassAttr(classes []string) string {
+	return fmt.Sprintf(` class="%s"`, svg.EscapeText(strings.Join(classes, " ")))
 }
 
 func renderArrowheadLabel(connection d2target.Connection, text string, isDst bool, inlineTheme *d2themes.Theme) string {
@@ -1691,7 +1695,7 @@ func drawShape(writer, appendixWriter io.Writer, diagramHash string, targetShape
 		classes = append(classes, "animated-shape")
 	}
 	classes = append(classes, targetShape.Classes...)
-	classStr := fmt.Sprintf(` class="%s"`, strings.Join(classes, " "))
+	classStr := renderClassAttr(classes)
 	fmt.Fprintf(writer, `<g%s%s>`, classStr, opacityStyle)
 	tl := geo.NewPoint(float64(targetShape.Pos.X), float64(targetShape.Pos.Y))
 	width := float64(targetShape.Width)
