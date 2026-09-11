@@ -2838,6 +2838,17 @@ func appendOnTriggerLazy(buf *bytes.Buffer, source string, triggers []string, ne
 var DEFAULT_DARK_THEME *int64 = nil // no theme selected
 
 func Render(diagram *d2target.Diagram, opts *RenderOpts) ([]byte, error) {
+	for _, targetShape := range diagram.Shapes {
+		if textmeasure.IsDangerousLink(targetShape.Link) {
+			return nil, fmt.Errorf("shape %q uses an unsafe link URL scheme", targetShape.ID)
+		}
+	}
+	for _, connection := range diagram.Connections {
+		if textmeasure.IsDangerousLink(connection.Link) {
+			return nil, fmt.Errorf("connection %q uses an unsafe link URL scheme", connection.ID)
+		}
+	}
+
 	sketch := false
 	pad := DEFAULT_PADDING
 	tl, br := diagram.BoundingBox()

@@ -719,6 +719,10 @@ func (c *compiler) compileReserved(attrs *d2graph.Attributes, f *d2ir.Field) {
 		attrs.Left.Value = scalar.ScalarString()
 		attrs.Left.MapKey = f.LastPrimaryKey()
 	case "link":
+		if textmeasure.IsDangerousLink(scalar.ScalarString()) {
+			c.errorf(scalar, "link uses an unsafe URL scheme")
+			return
+		}
 		attrs.Link = &d2graph.Scalar{}
 		attrs.Link.Value = scalar.ScalarString()
 		attrs.Link.MapKey = f.LastPrimaryKey()

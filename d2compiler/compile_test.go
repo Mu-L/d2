@@ -104,6 +104,52 @@ func TestEdgeLinkBecomesLabel(t *testing.T) {
 	}
 }
 
+func TestCompileRejectsDangerousOrdinaryLinks(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name   string
+		script string
+	}{
+		{name: "shape_javascript", script: `x.link: javascript:alert(1)`},
+		{name: "shape_encoded_javascript", script: `x.link: "j&#x61;va%73cript:alert(1)"`},
+		{name: "shape_unsafe_data", script: `x.link: "data:text/html,<script>alert(1)</script>"`},
+		{name: "connection_vbscript", script: `x -> y: {link: vbscript:msgbox(1)}`},
+		{name: "connection_obfuscated_javascript", script: "x -> y: {link: \"java\tscript:alert(1)\"}"},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			g, _, err := d2compiler.Compile("dangerous-link.d2", strings.NewReader(tc.script), nil)
+			tassert.Nil(t, g)
+			tassert.ErrorContains(t, err, "link uses an unsafe URL scheme")
+		})
+	}
+}
+
+func TestCompilePreservesSafeOrdinaryLinks(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name   string
+		script string
+	}{
+		{name: "https_shape", script: `x.link: https://example.com`},
+		{name: "mailto_connection", script: `x -> y: {link: mailto:security@example.com}`},
+		{name: "app_scheme", script: `x.link: vscode://file/example.go:10:2`},
+		{name: "safe_raster_data", script: `x.link: "data:image/png;base64,iVBORw0KGgo="`},
+		{name: "board", script: `x.link: layers.details; layers: {details: {y}}`},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			g, _, err := d2compiler.Compile("safe-link.d2", strings.NewReader(tc.script), nil)
+			tassert.NoError(t, err)
+			tassert.NotNil(t, g)
+		})
+	}
+}
+
 func TestCompile(t *testing.T) {
 	t.Parallel()
 
