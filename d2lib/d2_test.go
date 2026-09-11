@@ -2,6 +2,7 @@ package d2lib
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"testing"
 
@@ -11,6 +12,18 @@ import (
 	d2log "github.com/d2lang/d2/lib/log"
 	"github.com/d2lang/d2/lib/textmeasure"
 )
+
+func TestParseAndCompileHonorCanceledContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if _, err := Parse(ctx, "x", nil); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Parse() error = %v, want context.Canceled", err)
+	}
+	if _, _, err := Compile(ctx, "x", nil, nil); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Compile() error = %v, want context.Canceled", err)
+	}
+}
 
 func TestGetLayoutDoesNotUseEnvironmentFallback(t *testing.T) {
 	t.Setenv("D2_LAYOUT", "dagre")

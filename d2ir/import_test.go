@@ -1,12 +1,53 @@
 package d2ir_test
 
 import (
+	"context"
+	"errors"
+	"io/fs"
+	"strings"
 	"testing"
+	"testing/fstest"
 
 	"github.com/d2lang/util-go/assert"
 
 	"github.com/d2lang/d2/d2ir"
+	"github.com/d2lang/d2/d2parser"
 )
+
+type cancelOnOpenFS struct {
+	fs.FS
+	cancel context.CancelFunc
+}
+
+func (c cancelOnOpenFS) Open(name string) (fs.File, error) {
+	file, err := c.FS.Open(name)
+	if err == nil {
+		c.cancel()
+	}
+	return file, err
+}
+
+func TestCanceledContextPropagatesFromImportedParse(t *testing.T) {
+	ast, err := d2parser.Parse("index.d2", strings.NewReader("...@child"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	_, _, err = d2ir.Compile(ast, &d2ir.CompileOptions{
+		Context: ctx,
+		FS: cancelOnOpenFS{
+			FS: fstest.MapFS{
+				"child.d2": &fstest.MapFile{Data: []byte("x")},
+			},
+			cancel: cancel,
+		},
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Compile error = %v, want context.Canceled", err)
+	}
+}
 
 func testCompileImports(t *testing.T) {
 	t.Parallel()

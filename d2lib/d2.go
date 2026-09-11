@@ -56,7 +56,7 @@ func Parse(ctx context.Context, input string, compileOpts *CompileOptions) (*d2a
 		compileOpts = &CompileOptions{}
 	}
 
-	ast, err := d2parser.Parse(compileOpts.InputPath, strings.NewReader(input), &d2parser.ParseOptions{
+	ast, err := d2parser.ParseContext(ctx, compileOpts.InputPath, strings.NewReader(input), &d2parser.ParseOptions{
 		UTF16Pos: compileOpts.UTF16Pos,
 	})
 	return ast, err
@@ -75,6 +75,7 @@ func compileInput(ctx context.Context, input string, compileOpts *CompileOptions
 	}
 
 	g, config, err := d2compiler.Compile(compileOpts.InputPath, strings.NewReader(input), &d2compiler.CompileOptions{
+		Context:  ctx,
 		UTF16Pos: compileOpts.UTF16Pos,
 		FS:       compileOpts.FS,
 	})
