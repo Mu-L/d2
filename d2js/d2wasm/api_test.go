@@ -4,6 +4,7 @@ package d2wasm
 
 import (
 	"encoding/json"
+	"strings"
 	"sync"
 	"syscall/js"
 	"testing"
@@ -93,6 +94,39 @@ func TestDeprecatedRawWASMWarningCannotChangeResponse(t *testing.T) {
 	got := call.Invoke().String()
 	if got != `{"data":"unchanged"}` {
 		t.Fatalf("response = %s, want legacy response unchanged", got)
+	}
+}
+
+func TestRenderRejectsDangerousLegendShapeLinks(t *testing.T) {
+	call := wrapWASMCall(Render)
+	defer call.Release()
+
+	for _, tc := range []struct {
+		name    string
+		request string
+		object  string
+	}{
+		{
+			name:    "shape",
+			request: `{"diagram":{"legend":{"shapes":[{"id":"unsafe-shape","type":"rectangle","label":"Shape","opacity":1,"strokeWidth":2,"fill":"B6","stroke":"B1","link":"javascript:alert(1)"}]}},"options":{}}`,
+			object:  `legend shape "unsafe-shape"`,
+		},
+		{
+			name:    "image shape",
+			request: `{"diagram":{"legend":{"shapes":[{"id":"unsafe-image","type":"image","label":"Image","opacity":1,"icon":{"Scheme":"https","Host":"example.com","Path":"/image.png"},"link":"data:text/html,<script>alert(1)</script>"}]}},"options":{}}`,
+			object:  `legend shape "unsafe-image"`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			response := call.Invoke(tc.request).String()
+			var got WASMResponse
+			if err := json.Unmarshal([]byte(response), &got); err != nil {
+				t.Fatalf("invalid response %q: %v", response, err)
+			}
+			if got.Error == nil || got.Error.Code != 500 || !strings.Contains(got.Error.Message, tc.object+" uses an unsafe link URL scheme") {
+				t.Fatalf("error = %#v, want code 500 containing unsafe-link error for %s", got.Error, tc.object)
+			}
+		})
 	}
 }
 
