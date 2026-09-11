@@ -8,6 +8,7 @@ package d2plugin
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -128,50 +129,30 @@ type PluginInfo struct {
 const binaryPrefix = "d2plugin-"
 
 func ListPlugins(ctx context.Context) ([]Plugin, error) {
-	// 1. Run Info on all bundled plugins in the global plugins array.
-	//    - set Type for each bundled plugin to "bundled".
-	// 2. Iterate through directories in $PATH and look for executables within these
-	//    directories with the prefix d2plugin-*
-	// 3. Run each plugin binary with the argument info. e.g. d2plugin-dagre info
-
 	var ps []Plugin
 	ps = append(ps, plugins...)
+	seenNames := make(map[string]struct{}, len(plugins))
+	for _, bundled := range plugins {
+		info, err := bundled.Info(ctx)
+		if err != nil {
+			return nil, err
+		}
+		seenNames[strings.ToLower(info.Name)] = struct{}{}
+	}
 
 	matches, err := xexec.SearchPath(binaryPrefix)
 	if err != nil {
 		return nil, err
 	}
-BINARY_PLUGINS_LOOP:
 	for _, path := range matches {
-		// A bundled plugin owns its executable basename. Skip a shadowed
-		// external binary before even running its info command: a stale,
-		// malformed, or hanging legacy plugin must not make the bundled engine
-		// unavailable.
 		basename := externalPluginName(path)
-		for _, bundled := range plugins {
-			info, err := bundled.Info(ctx)
-			if err != nil {
-				return nil, err
-			}
-			if strings.EqualFold(info.Name, basename) {
-				continue BINARY_PLUGINS_LOOP
-			}
+		key := strings.ToLower(basename)
+		if _, exists := seenNames[key]; exists {
+			continue
 		}
-		p := &execPlugin{path: path}
-		info, err := p.Info(ctx)
-		if err != nil {
-			return nil, err
-		}
-		for _, p2 := range ps {
-			info2, err := p2.Info(ctx)
-			if err != nil {
-				return nil, err
-			}
-			if strings.EqualFold(info.Name, info2.Name) {
-				continue BINARY_PLUGINS_LOOP
-			}
-		}
-		ps = append(ps, p)
+		seenNames[key] = struct{}{}
+		// External plugins are intentionally not executed during discovery.
+		ps = append(ps, &execPlugin{path: path})
 	}
 	return ps, nil
 }
@@ -200,6 +181,53 @@ func ListPluginInfos(ctx context.Context, ps []Plugin) ([]*PluginInfo, error) {
 	return infoSlice, nil
 }
 
+// ListPluginSummaries returns enough metadata to list discovered plugins
+// without executing external plugin binaries.
+func ListPluginSummaries(ctx context.Context, ps []Plugin) ([]*PluginInfo, error) {
+	infos := make([]*PluginInfo, 0, len(ps))
+	for _, p := range ps {
+		if external, ok := p.(*execPlugin); ok {
+			infos = append(infos, &PluginInfo{
+				Name: externalPluginName(external.path),
+				Type: "binary",
+				Path: external.path,
+			})
+			continue
+		}
+		info, err := p.Info(ctx)
+		if err != nil {
+			return nil, err
+		}
+		infos = append(infos, info)
+	}
+	return infos, nil
+}
+
+// ListPluginNames returns discovered plugin names without executing external
+// plugin binaries.
+func ListPluginNames(ctx context.Context, ps []Plugin) ([]string, error) {
+	names := make([]string, 0, len(ps))
+	for _, p := range ps {
+		name, err := pluginName(ctx, p)
+		if err != nil {
+			return nil, err
+		}
+		names = append(names, name)
+	}
+	return names, nil
+}
+
+func pluginName(ctx context.Context, p Plugin) (string, error) {
+	if external, ok := p.(*execPlugin); ok {
+		return externalPluginName(external.path), nil
+	}
+	info, err := p.Info(ctx)
+	if err != nil {
+		return "", err
+	}
+	return info.Name, nil
+}
+
 // FindPlugin finds the plugin with the given name.
 //  1. It first searches the bundled plugins in the global plugins slice.
 //  2. If not found, it then searches each directory in $PATH for a binary with the name
@@ -208,11 +236,20 @@ func ListPluginInfos(ctx context.Context, ps []Plugin) ([]*PluginInfo, error) {
 //     to get a plugin implementation around the binary and returns it.
 func FindPlugin(ctx context.Context, ps []Plugin, name string) (Plugin, error) {
 	for _, p := range ps {
-		info, err := p.Info(ctx)
+		candidateName, err := pluginName(ctx, p)
 		if err != nil {
 			return nil, err
 		}
-		if strings.EqualFold(info.Name, name) {
+		if strings.EqualFold(candidateName, name) {
+			if external, ok := p.(*execPlugin); ok {
+				info, err := external.Info(ctx)
+				if err != nil {
+					return nil, err
+				}
+				if !strings.EqualFold(info.Name, name) {
+					return nil, fmt.Errorf("plugin %q reported name %q", external.path, info.Name)
+				}
+			}
 			if instancer, ok := p.(pluginInstancer); ok {
 				return instancer.newInstance(), nil
 			}
@@ -233,6 +270,33 @@ func ListPluginFlags(ctx context.Context, ps []Plugin) ([]PluginSpecificFlag, er
 	}
 
 	return out, nil
+}
+
+// ListPluginFlagsForSelection returns flags for every bundled plugin and the
+// selected external plugin. Bundled plugins are safe to inspect in-process;
+// external plugins must not be executed merely because their binaries are on
+// PATH.
+func ListPluginFlagsForSelection(ctx context.Context, ps []Plugin, selectedName string) ([]PluginSpecificFlag, error) {
+	selected := make([]Plugin, 0, len(ps))
+	for _, p := range ps {
+		external, ok := p.(*execPlugin)
+		if !ok {
+			selected = append(selected, p)
+			continue
+		}
+		if !strings.EqualFold(externalPluginName(external.path), selectedName) {
+			continue
+		}
+		info, err := external.Info(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if !strings.EqualFold(info.Name, selectedName) {
+			return nil, fmt.Errorf("plugin %q reported name %q", external.path, info.Name)
+		}
+		selected = append(selected, external)
+	}
+	return ListPluginFlags(ctx, selected)
 }
 
 func HydratePluginOpts(ctx context.Context, ms *xmain.State, plugin Plugin) error {

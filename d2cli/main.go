@@ -154,8 +154,8 @@ func Run(ctx context.Context, ms *xmain.State) (err error) {
 	if err != nil {
 		return err
 	}
-	err = populateLayoutOpts(ctx, ms, plugins)
-	if err != nil {
+	selectedLayout := layoutFromArgs(ms.Opts.Args, *layoutFlag)
+	if err := populateLayoutOpts(ctx, ms, plugins, selectedLayout); err != nil {
 		return err
 	}
 
@@ -400,6 +400,30 @@ func Run(ctx context.Context, ms *xmain.State) (err error) {
 		return fmt.Errorf("failed to compile %s: %w", ms.HumanPath(inputPath), err)
 	}
 	return nil
+}
+
+func layoutFromArgs(args []string, fallback string) string {
+	layout := fallback
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "--" {
+			break
+		}
+		switch {
+		case arg == "--layout" || arg == "-l":
+			if i+1 < len(args) {
+				i++
+				layout = args[i]
+			}
+		case strings.HasPrefix(arg, "--layout="):
+			layout = strings.TrimPrefix(arg, "--layout=")
+		case strings.HasPrefix(arg, "-l="):
+			layout = strings.TrimPrefix(arg, "-l=")
+		case strings.HasPrefix(arg, "-l") && len(arg) > len("-l"):
+			layout = strings.TrimPrefix(arg, "-l")
+		}
+	}
+	return layout
 }
 
 func LayoutResolver(ctx context.Context, ms *xmain.State, plugins []d2plugin.Plugin) func(engine string) (d2graph.LayoutGraph, error) {
@@ -1087,8 +1111,8 @@ func getFileName(path string) string {
 	return strings.TrimSuffix(filepath.Base(path), ext)
 }
 
-func populateLayoutOpts(ctx context.Context, ms *xmain.State, ps []d2plugin.Plugin) error {
-	pluginFlags, err := d2plugin.ListPluginFlags(ctx, ps)
+func populateLayoutOpts(ctx context.Context, ms *xmain.State, ps []d2plugin.Plugin, selectedLayout string) error {
+	pluginFlags, err := d2plugin.ListPluginFlagsForSelection(ctx, ps, selectedLayout)
 	if err != nil {
 		return err
 	}
