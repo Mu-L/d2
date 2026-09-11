@@ -504,7 +504,7 @@ func Table(shape d2target.Shape) (string, error) {
 		textEl.Y = constraintTR.Y + float64(shape.FontSize)*3/4
 		textEl.Fill = shape.SecondaryAccentColor
 		textEl.Style = fmt.Sprintf("text-anchor:%s;font-size:%vpx;letter-spacing:2px", "end", float64(shape.FontSize))
-		textEl.Content = f.ConstraintAbbr()
+		textEl.Content = svg.EscapeText(f.ConstraintAbbr())
 		output += textEl.Render()
 
 		rowBox.TopLeft.Y += rowHeight

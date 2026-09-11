@@ -102,7 +102,7 @@ func tableRow(shape d2target.Shape, box *geo.Box, nameText, typeText, constraint
 	textEl.X = box.TopLeft.X + (box.Width - d2target.NamePadding)
 	textEl.Fill = shape.SecondaryAccentColor
 	textEl.Style = fmt.Sprintf("text-anchor:%s;font-size:%vpx", "end", fontSize)
-	textEl.Content = constraintText
+	textEl.Content = svg.EscapeText(constraintText)
 	out += textEl.Render()
 
 	return out
