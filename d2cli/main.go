@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"os/user"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -154,9 +155,11 @@ func Run(ctx context.Context, ms *xmain.State) (err error) {
 	if err != nil {
 		return err
 	}
-	err = populateLayoutOpts(ctx, ms, plugins)
-	if err != nil {
-		return err
+	selectedLayout, selectionOK := layoutFromArgs(ms.Opts.Args, ms.Opts.Flags, *layoutFlag)
+	if selectionOK {
+		if err := populateLayoutOpts(ctx, ms, plugins, selectedLayout); err != nil {
+			return err
+		}
 	}
 
 	err = ms.Opts.Flags.Parse(ms.Opts.Args)
@@ -400,6 +403,171 @@ func Run(ctx context.Context, ms *xmain.State) (err error) {
 		return fmt.Errorf("failed to compile %s: %w", ms.HumanPath(inputPath), err)
 	}
 	return nil
+}
+
+func layoutFromArgs(args []string, baseFlags *pflag.FlagSet, fallback string) (string, bool) {
+	if layoutSelectionIsAmbiguous(args, baseFlags) {
+		return fallback, false
+	}
+
+	staged := pflag.NewFlagSet("layout selection", pflag.ContinueOnError)
+	staged.SetOutput(io.Discard)
+	staged.Usage = func() {}
+	staged.ParseErrorsAllowlist.UnknownFlags = true
+
+	valid := true
+	baseFlags.VisitAll(func(flag *pflag.Flag) {
+		if !valid {
+			return
+		}
+		value, ok := newStagedFlagValue(flag.Value.Type(), flag.DefValue)
+		if !ok {
+			valid = false
+			return
+		}
+		copy := *flag
+		copy.Value = value
+		copy.Changed = false
+		staged.AddFlag(&copy)
+	})
+	if !valid {
+		return fallback, false
+	}
+	if err := staged.Parse(args); err != nil {
+		// The real parser below will return the authoritative help or usage
+		// result. Most importantly, do not execute a plugin named only in
+		// arguments that pflag would never reach.
+		return fallback, false
+	}
+	layout, err := staged.GetString("layout")
+	if err != nil {
+		return fallback, false
+	}
+	return layout, true
+}
+
+// layoutSelectionIsAmbiguous applies a conservative ordering rule for plugin
+// flags that are not registered yet: a bare unknown flag must not precede a
+// layout selection or override. Such a flag might be boolean and leave the
+// layout token to be parsed, or it might require a value and consume that same
+// token. Attached values are unambiguous and remain supported.
+//
+// Known base flags are skipped using their real pflag arity so a layout-looking
+// value of --browser (or another known value flag) is not mistaken for a
+// selection. Once a bare unknown is found, the suffix check intentionally also
+// looks past --: a value-taking plugin flag could consume that terminator.
+func layoutSelectionIsAmbiguous(args []string, baseFlags *pflag.FlagSet) bool {
+	layoutFlag := baseFlags.Lookup("layout")
+	if layoutFlag == nil {
+		return true
+	}
+
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if len(arg) < 2 || arg[0] != '-' {
+			continue
+		}
+		if arg == "--" {
+			break
+		}
+		if strings.HasPrefix(arg, "--") {
+			name, _, hasAttachedValue := strings.Cut(arg[2:], "=")
+			flag := baseFlags.Lookup(name)
+			if flag == nil {
+				if !hasAttachedValue && argsContainLayoutSyntax(args[i+1:], layoutFlag) {
+					return true
+				}
+				continue
+			}
+			if !hasAttachedValue && flag.NoOptDefVal == "" && i+1 < len(args) {
+				i++
+			}
+			continue
+		}
+
+		shorthands := arg[1:]
+		for len(shorthands) > 0 {
+			flag := baseFlags.ShorthandLookup(shorthands[:1])
+			hasAttachedValue := len(shorthands) > 1 && shorthands[1] == '='
+			if flag == nil {
+				containsLayoutShorthand := layoutFlag.Shorthand != "" && strings.Contains(shorthands[1:], layoutFlag.Shorthand)
+				if !hasAttachedValue && (containsLayoutShorthand || argsContainLayoutSyntax(args[i+1:], layoutFlag)) {
+					return true
+				}
+				if hasAttachedValue {
+					break
+				}
+				shorthands = shorthands[1:]
+				continue
+			}
+			if hasAttachedValue || flag.NoOptDefVal == "" {
+				if !hasAttachedValue && len(shorthands) == 1 && i+1 < len(args) {
+					i++
+				}
+				break
+			}
+			shorthands = shorthands[1:]
+		}
+	}
+	return false
+}
+
+func argsContainLayoutSyntax(args []string, layoutFlag *pflag.Flag) bool {
+	long := "--" + layoutFlag.Name
+	for _, arg := range args {
+		if arg == long || strings.HasPrefix(arg, long+"=") || shortsContainLayoutSyntax(arg, layoutFlag) {
+			return true
+		}
+	}
+	return false
+}
+
+func shortsContainLayoutSyntax(arg string, layoutFlag *pflag.Flag) bool {
+	if layoutFlag.Shorthand == "" || len(arg) < 2 || arg[0] != '-' || arg[1] == '-' {
+		return false
+	}
+	return strings.Contains(arg[1:], layoutFlag.Shorthand)
+}
+
+type stagedFlagValue struct {
+	typeName string
+	value    string
+}
+
+func newStagedFlagValue(typeName, value string) (*stagedFlagValue, bool) {
+	v := &stagedFlagValue{typeName: typeName, value: value}
+	if err := v.Set(value); err != nil {
+		return nil, false
+	}
+	return v, true
+}
+
+func (v *stagedFlagValue) Set(value string) error {
+	var err error
+	switch v.typeName {
+	case "string":
+	case "bool":
+		_, err = strconv.ParseBool(value)
+	case "int64":
+		_, err = strconv.ParseInt(value, 0, 64)
+	case "float64":
+		_, err = strconv.ParseFloat(value, 64)
+	default:
+		return fmt.Errorf("unsupported staged flag type %q", v.typeName)
+	}
+	if err != nil {
+		return err
+	}
+	v.value = value
+	return nil
+}
+
+func (v *stagedFlagValue) String() string {
+	return v.value
+}
+
+func (v *stagedFlagValue) Type() string {
+	return v.typeName
 }
 
 func LayoutResolver(ctx context.Context, ms *xmain.State, plugins []d2plugin.Plugin) func(engine string) (d2graph.LayoutGraph, error) {
@@ -1087,8 +1255,8 @@ func getFileName(path string) string {
 	return strings.TrimSuffix(filepath.Base(path), ext)
 }
 
-func populateLayoutOpts(ctx context.Context, ms *xmain.State, ps []d2plugin.Plugin) error {
-	pluginFlags, err := d2plugin.ListPluginFlags(ctx, ps)
+func populateLayoutOpts(ctx context.Context, ms *xmain.State, ps []d2plugin.Plugin, selectedLayout string) error {
+	pluginFlags, err := d2plugin.ListPluginFlagsForSelection(ctx, ps, selectedLayout)
 	if err != nil {
 		return err
 	}

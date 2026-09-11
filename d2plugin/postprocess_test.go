@@ -18,6 +18,7 @@ const postProcessHelperEnv = "D2_POSTPROCESS_HELPER_PROCESS"
 const (
 	pluginInfoHelperEnv = "D2_PLUGIN_INFO_HELPER_PROCESS"
 	pluginInfoMarkerEnv = "D2_PLUGIN_INFO_HELPER_MARKER"
+	pluginInfoNameEnv   = "D2_PLUGIN_INFO_HELPER_NAME"
 )
 
 func TestMain(m *testing.M) {
@@ -28,8 +29,20 @@ func TestMain(m *testing.M) {
 				os.Exit(2)
 			}
 		}
-		fmt.Fprint(os.Stdout, `{"name":"tala","features":[]}`)
-		os.Exit(0)
+		if len(os.Args) == 2 && os.Args[1] == "flags" {
+			fmt.Fprint(os.Stdout, `[]`)
+			os.Exit(0)
+		}
+		if len(os.Args) == 2 && os.Args[1] == "info" {
+			name := os.Getenv(pluginInfoNameEnv)
+			if name == "" {
+				name = "tala"
+			}
+			fmt.Fprintf(os.Stdout, `{"name":%q,"features":[]}`, name)
+			os.Exit(0)
+		}
+		fmt.Fprintf(os.Stderr, "unexpected helper arguments: %q", os.Args[1:])
+		os.Exit(2)
 	}
 	if os.Getenv(postProcessHelperEnv) == "1" {
 		if len(os.Args) != 2 || os.Args[1] != "postprocess" {

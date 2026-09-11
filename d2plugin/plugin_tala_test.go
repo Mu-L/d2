@@ -2,8 +2,10 @@ package d2plugin
 
 import (
 	"context"
+	"errors"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -146,6 +148,64 @@ func TestBundledTALAWinsBeforeExecutingExternalDuplicate(t *testing.T) {
 	}
 	if _, err := os.Stat(marker); !os.IsNotExist(err) {
 		t.Fatalf("shadowed external TALA was executed before duplicate suppression: %v", err)
+	}
+}
+
+func TestExternalPluginsExecuteOnlyWhenSelected(t *testing.T) {
+	temp := t.TempDir()
+	marker := filepath.Join(temp, "executed")
+	name := binaryPrefix + "external"
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	copyExecutable(t, filepath.Join(temp, name))
+
+	t.Setenv(pluginInfoHelperEnv, "1")
+	t.Setenv(pluginInfoMarkerEnv, marker)
+	t.Setenv(pluginInfoNameEnv, "external")
+	t.Setenv("PATH", temp)
+	listed, err := ListPlugins(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("plugin executed during discovery: %v", err)
+	}
+	if _, err := ListPluginNames(context.Background(), listed); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("plugin executed while listing names: %v", err)
+	}
+	if _, err := ListPluginSummaries(context.Background(), listed); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("plugin executed while listing summaries: %v", err)
+	}
+	if _, err := FindPlugin(context.Background(), listed, "missing"); !errors.Is(err, exec.ErrNotFound) {
+		t.Fatalf("FindPlugin(missing) error = %v, want exec.ErrNotFound", err)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("unselected plugin executed: %v", err)
+	}
+	if _, err := ListPluginFlagsForSelection(context.Background(), listed, "missing"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("unselected plugin executed while listing flags: %v", err)
+	}
+	if _, err := ListPluginFlagsForSelection(context.Background(), listed, "external"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("selected plugin did not execute while listing flags: %v", err)
+	}
+	if _, err := FindPlugin(context.Background(), listed, "external"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("selected plugin did not execute: %v", err)
 	}
 }
 

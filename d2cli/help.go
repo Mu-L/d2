@@ -67,7 +67,7 @@ func themesCmd(_ context.Context, ms *xmain.State) {
 
 func shortLayoutHelp(ctx context.Context, ms *xmain.State, ps []d2plugin.Plugin) error {
 	var pluginLines []string
-	pinfos, err := d2plugin.ListPluginInfos(ctx, ps)
+	pinfos, err := d2plugin.ListPluginSummaries(ctx, ps)
 	if err != nil {
 		return err
 	}
@@ -75,6 +75,8 @@ func shortLayoutHelp(ctx context.Context, ms *xmain.State, ps []d2plugin.Plugin)
 		var l string
 		if p.Type == "bundled" {
 			l = fmt.Sprintf("%s (bundled) - %s", p.Name, p.ShortHelp)
+		} else if p.ShortHelp == "" {
+			l = fmt.Sprintf("%s (%s)", p.Name, humanPath(p.Path))
 		} else {
 			l = fmt.Sprintf("%s (%s) - %s", p.Name, humanPath(p.Path), p.ShortHelp)
 		}
@@ -129,13 +131,9 @@ func longLayoutHelp(ctx context.Context, ms *xmain.State, ps []d2plugin.Plugin) 
 }
 
 func layoutNotFound(ctx context.Context, ps []d2plugin.Plugin, layout string) error {
-	pinfos, err := d2plugin.ListPluginInfos(ctx, ps)
+	names, err := d2plugin.ListPluginNames(ctx, ps)
 	if err != nil {
 		return err
-	}
-	var names []string
-	for _, p := range pinfos {
-		names = append(names, p.Name)
 	}
 
 	return xmain.UsageErrorf(`D2_LAYOUT "%s" is not bundled and could not be found in your $PATH.
