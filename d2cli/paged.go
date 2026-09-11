@@ -78,7 +78,7 @@ func newPagedRenderer(ctx context.Context, plugin d2plugin.Plugin, inputPath str
 	if err != nil {
 		return nil, err
 	}
-	assets, err := pagedSceneAssetOptions(inputPath, cacheImages, boardCount)
+	assets, err := pagedSceneAssetOptions(ctx, inputPath, cacheImages, boardCount)
 	if err != nil {
 		return nil, err
 	}
@@ -226,12 +226,12 @@ func pagedFrameOptions(totalBoards int, remainingPixels int64) (d2raster.FrameOp
 	return options, nil
 }
 
-func pagedSceneAssetOptions(inputPath string, cacheImages bool, boardCount int) (*d2scenebuild.AssetOptions, error) {
+func pagedSceneAssetOptions(ctx context.Context, inputPath string, cacheImages bool, boardCount int) (*d2scenebuild.AssetOptions, error) {
 	budget, err := divideSVGImportBudget(svgImportBudget(), boardCount)
 	if err != nil {
 		return nil, err
 	}
-	return newSceneAssetOptions(inputPath, cacheImages, assetSessionLimits{
+	return newSceneAssetOptions(ctx, inputPath, cacheImages, assetSessionLimits{
 		maxDecodedPixels:          rasterMaxPixels,
 		maxAssets:                 imageAssetMaxCount,
 		maxCumulativeEncodedBytes: imageAssetMaxCumulativeEncodedBytes,

@@ -21,6 +21,7 @@ import (
 
 	"github.com/d2lang/d2/internal/testlog"
 	"github.com/d2lang/d2/lib/log"
+	"github.com/d2lang/d2/lib/netpolicy"
 	"github.com/d2lang/d2/lib/simplelog"
 	"github.com/d2lang/util-go/go2"
 )
@@ -32,6 +33,10 @@ type roundTripFunc func(req *http.Request) *http.Response
 
 func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return f(req), nil
+}
+
+func bundleRemoteForTest(ctx context.Context, l simplelog.Logger, in []byte, cacheImages bool) ([]byte, error) {
+	return BundleRemoteWithPolicy(ctx, l, in, cacheImages, netpolicy.Policy{AllowPrivateNetworks: true})
 }
 
 func TestRegex(t *testing.T) {
@@ -103,7 +108,7 @@ width="328" height="587" viewBox="-100 -131 328 587"><style type="text/css">
 	})
 
 	l := simplelog.FromLibLog(ctx)
-	out, err := BundleRemote(ctx, l, []byte(sampleSVG), false)
+	out, err := bundleRemoteForTest(ctx, l, []byte(sampleSVG), false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -127,7 +132,7 @@ width="328" height="587" viewBox="-100 -131 328 587"><style type="text/css">
 		respRecorder.WriteHeader(200)
 		return respRecorder.Result()
 	})
-	_, err = BundleRemote(ctx, l, []byte(sampleSVG), false)
+	_, err = bundleRemoteForTest(ctx, l, []byte(sampleSVG), false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,7 +147,7 @@ width="328" height="587" viewBox="-100 -131 328 587"><style type="text/css">
 		respRecorder.WriteHeader(200)
 		return respRecorder.Result()
 	})
-	_, err = BundleRemote(ctx, l, []byte(sampleSVG), false)
+	_, err = bundleRemoteForTest(ctx, l, []byte(sampleSVG), false)
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -154,7 +159,7 @@ width="328" height="587" viewBox="-100 -131 328 587"><style type="text/css">
 		respRecorder.WriteHeader(500)
 		return respRecorder.Result()
 	})
-	_, err = BundleRemote(ctx, l, []byte(sampleSVG), false)
+	_, err = bundleRemoteForTest(ctx, l, []byte(sampleSVG), false)
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -303,7 +308,7 @@ width="328" height="587" viewBox="-100 -131 328 587"><style type="text/css">
 	})
 
 	l := simplelog.FromLibLog(ctx)
-	out, err := BundleRemote(ctx, l, []byte(sampleSVG), false)
+	out, err := bundleRemoteForTest(ctx, l, []byte(sampleSVG), false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -385,7 +390,7 @@ func TestInlineRemoteCompressedSVG(t *testing.T) {
 				return respRecorder.Result()
 			})
 
-			out, err := BundleRemote(ctx, simplelog.FromLibLog(ctx), sampleSVG, false)
+			out, err := bundleRemoteForTest(ctx, simplelog.FromLibLog(ctx), sampleSVG, false)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -452,11 +457,11 @@ width="328" height="587" viewBox="-100 -131 328 587"><style type="text/css">
 
 	l := simplelog.FromLibLog(ctx)
 	// Using a cache, imgs are not refetched on multiple runs
-	_, err := BundleRemote(ctx, l, []byte(sampleSVG), true)
+	_, err := bundleRemoteForTest(ctx, l, []byte(sampleSVG), true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = BundleRemote(ctx, l, []byte(sampleSVG), true)
+	_, err = bundleRemoteForTest(ctx, l, []byte(sampleSVG), true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -464,11 +469,11 @@ width="328" height="587" viewBox="-100 -131 328 587"><style type="text/css">
 
 	// With cache disabled, it refetches
 	count = 0
-	_, err = BundleRemote(ctx, l, []byte(sampleSVG), false)
+	_, err = bundleRemoteForTest(ctx, l, []byte(sampleSVG), false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = BundleRemote(ctx, l, []byte(sampleSVG), false)
+	_, err = bundleRemoteForTest(ctx, l, []byte(sampleSVG), false)
 	if err != nil {
 		t.Fatal(err)
 	}

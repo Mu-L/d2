@@ -39,6 +39,7 @@ import (
 	"github.com/d2lang/d2/lib/background"
 	"github.com/d2lang/d2/lib/imgbundler"
 	"github.com/d2lang/d2/lib/log"
+	"github.com/d2lang/d2/lib/netpolicy"
 	"github.com/d2lang/d2/lib/pdf"
 	"github.com/d2lang/d2/lib/pptx"
 	"github.com/d2lang/d2/lib/simplelog"
@@ -57,6 +58,10 @@ func Run(ctx context.Context, ms *xmain.State) (err error) {
 	hostFlag := ms.Opts.String("HOST", "host", "h", "localhost", "host listening address when used with watch")
 	portFlag := ms.Opts.String("PORT", "port", "p", "0", "port listening address when used with watch")
 	bundleFlag, err := ms.Opts.Bool("D2_BUNDLE", "bundle", "b", true, "when outputting SVG, bundle all assets and layers into the output file")
+	if err != nil {
+		return err
+	}
+	allowPrivateNetworkFlag, err := ms.Opts.Bool("D2_ALLOW_PRIVATE_NETWORK", "allow-private-network", "", false, "allow remote image assets to access private, loopback, and link-local networks. Only enable this for trusted diagrams")
 	if err != nil {
 		return err
 	}
@@ -168,6 +173,7 @@ func Run(ctx context.Context, ms *xmain.State) (err error) {
 		help(ms)
 		return nil
 	}
+	ctx = netpolicy.WithPolicy(ctx, netpolicy.Policy{AllowPrivateNetworks: *allowPrivateNetworkFlag})
 
 	fontFamily, monoFontFamily, err := loadFonts(ms, *fontRegularFlag, *fontItalicFlag, *fontBoldFlag, *fontSemiboldFlag, *fontMonoFlag, *fontMonoBoldFlag, *fontMonoItalicFlag, *fontMonoSemiboldFlag)
 	if err != nil {
@@ -1043,7 +1049,7 @@ func _renderWithPNGEncoder(ctx context.Context, ms *xmain.State, plugin d2plugin
 	svg, bundleErr := imgbundler.BundleLocal(ctx, l, inputPath, svg, cacheImages)
 	if bundle {
 		var bundleErr2 error
-		svg, bundleErr2 = imgbundler.BundleRemote(ctx, l, svg, cacheImages)
+		svg, bundleErr2 = imgbundler.BundleRemoteWithPolicy(ctx, l, svg, cacheImages, netpolicy.FromContext(ctx))
 		bundleErr = multierr.Combine(bundleErr, bundleErr2)
 	}
 	if forceAppendix {

@@ -25,6 +25,7 @@ import (
 	"github.com/d2lang/d2/d2renderers/d2svgimport"
 	"github.com/d2lang/d2/d2target"
 	"github.com/d2lang/d2/lib/imageasset"
+	"github.com/d2lang/d2/lib/netpolicy"
 	"github.com/d2lang/d2/lib/xgif"
 )
 
@@ -265,7 +266,7 @@ func buildScene(ctx context.Context, inputPath string, cacheImages bool, diagram
 	if diagram == nil {
 		return nil, fmt.Errorf("raster export: nil diagram")
 	}
-	assetOptions, err := sceneAssetOptions(inputPath, cacheImages)
+	assetOptions, err := sceneAssetOptions(ctx, inputPath, cacheImages)
 	if err != nil {
 		return nil, err
 	}
@@ -615,7 +616,7 @@ func renderGIFWithSession(
 	if len(boards) == 0 {
 		return summary, fmt.Errorf("GIF animation requires at least one renderable board")
 	}
-	assetOptions, err := gifSceneAssetOptions(inputPath, cacheImages, len(boards))
+	assetOptions, err := gifSceneAssetOptions(ctx, inputPath, cacheImages, len(boards))
 	if err != nil {
 		return summary, err
 	}
@@ -985,8 +986,8 @@ type assetSessionLimits struct {
 	svgImportBudget           d2scenebuild.SVGImportBudget
 }
 
-func sceneAssetOptions(inputPath string, cacheImages bool) (*d2scenebuild.AssetOptions, error) {
-	return newSceneAssetOptions(inputPath, cacheImages, assetSessionLimits{
+func sceneAssetOptions(ctx context.Context, inputPath string, cacheImages bool) (*d2scenebuild.AssetOptions, error) {
+	return newSceneAssetOptions(ctx, inputPath, cacheImages, assetSessionLimits{
 		maxDecodedPixels:          rasterMaxPixels,
 		maxAssets:                 imageAssetMaxCount,
 		maxCumulativeEncodedBytes: imageAssetMaxCumulativeEncodedBytes,
@@ -995,12 +996,12 @@ func sceneAssetOptions(inputPath string, cacheImages bool) (*d2scenebuild.AssetO
 	})
 }
 
-func gifSceneAssetOptions(inputPath string, cacheImages bool, boardCount int) (*d2scenebuild.AssetOptions, error) {
+func gifSceneAssetOptions(ctx context.Context, inputPath string, cacheImages bool, boardCount int) (*d2scenebuild.AssetOptions, error) {
 	budget, err := divideSVGImportBudget(svgImportBudget(), boardCount)
 	if err != nil {
 		return nil, err
 	}
-	return newSceneAssetOptions(inputPath, cacheImages, assetSessionLimits{
+	return newSceneAssetOptions(ctx, inputPath, cacheImages, assetSessionLimits{
 		maxDecodedPixels:          gifMaxFramePixels,
 		maxAssets:                 gifImageAssetMaxCount,
 		maxCumulativeEncodedBytes: gifImageEncodedBytes,
@@ -1009,7 +1010,7 @@ func gifSceneAssetOptions(inputPath string, cacheImages bool, boardCount int) (*
 	})
 }
 
-func newSceneAssetOptions(inputPath string, cacheImages bool, limits assetSessionLimits) (*d2scenebuild.AssetOptions, error) {
+func newSceneAssetOptions(ctx context.Context, inputPath string, cacheImages bool, limits assetSessionLimits) (*d2scenebuild.AssetOptions, error) {
 	baseDir := ""
 	if inputPath != "" && inputPath != "-" {
 		baseDir = filepath.Dir(inputPath)
@@ -1031,6 +1032,7 @@ func newSceneAssetOptions(inputPath string, cacheImages bool, limits assetSessio
 	resolver, err := imageasset.New(imageasset.Options{
 		BaseDir:        baseDir,
 		HTTPClient:     assetHTTPClient,
+		NetworkPolicy:  netpolicy.FromContext(ctx),
 		Cache:          cache,
 		CacheNamespace: cacheNamespace,
 		Limits: imageasset.Limits{
