@@ -430,7 +430,7 @@ func (w *boardOutputWorkspace) publish() (touched bool, err error) {
 	return publishBoardOutputWorkspace(w)
 }
 
-func (w *boardOutputWorkspace) preflightMerge() ([]stagedBoardOutput, error) {
+func (w *boardOutputWorkspace) preflightMerge(final *boardOutputRoot) ([]stagedBoardOutput, error) {
 	var entries []stagedBoardOutput
 	err := filepath.WalkDir(w.stageRoot, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
@@ -452,7 +452,11 @@ func (w *boardOutputWorkspace) preflightMerge() ([]stagedBoardOutput, error) {
 			return fmt.Errorf("staged board output %q is not a regular file or directory", path)
 		}
 
-		destinationInfo, err := os.Lstat(destination)
+		if final == nil {
+			entries = append(entries, stagedBoardOutput{rel: rel, mode: info.Mode(), dir: info.IsDir()})
+			return nil
+		}
+		destinationInfo, err := final.handle.Lstat(rel)
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
