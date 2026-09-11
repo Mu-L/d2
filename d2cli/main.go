@@ -9,6 +9,7 @@ import (
 	"io"
 	"io/fs"
 	"log/slog"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/user"
@@ -804,7 +805,21 @@ func relink(currDiagramPath string, d *d2target.Diagram, linkToOutput map[string
 					if err != nil {
 						return err
 					}
-					d.Shapes[i].Link = rel
+					d.Shapes[i].Link = boardOutputLink(rel)
+					break
+				}
+			}
+		}
+	}
+	for i, connection := range d.Connections {
+		if connection.Link != "" {
+			for k, v := range linkToOutput {
+				if connection.Link == k {
+					rel, err := filepath.Rel(filepath.Dir(linkToOutput[currDiagramPath]), v)
+					if err != nil {
+						return err
+					}
+					d.Connections[i].Link = boardOutputLink(rel)
 					break
 				}
 			}
@@ -829,6 +844,16 @@ func relink(currDiagramPath string, d *d2target.Diagram, linkToOutput map[string
 		}
 	}
 	return nil
+}
+
+func boardOutputLink(path string) string {
+	parts := strings.Split(filepath.ToSlash(path), "/")
+	for i, part := range parts {
+		if part != "." && part != ".." {
+			parts[i] = url.PathEscape(part)
+		}
+	}
+	return strings.Join(parts, "/")
 }
 
 func postProcess(ctx context.Context, plugin d2plugin.Plugin, in []byte) ([]byte, error) {

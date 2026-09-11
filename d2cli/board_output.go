@@ -5,18 +5,23 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode/utf8"
 
+	"golang.org/x/text/cases"
 	"golang.org/x/text/unicode/norm"
 
 	"github.com/d2lang/d2/d2target"
 )
 
-const escapedBoardOutputPrefix = "_d2_"
+const (
+	escapedBoardOutputPrefix             = "_d2_"
+	maxPortableBoardOutputComponentBytes = 200
+	boardOutputManifestName              = ".d2-board-output-manifest-v1.json"
+)
 
 // boardOutputComponent preserves ordinary board names while mapping names that
 // have filesystem meaning to a portable, single path component. The prefix is
@@ -35,7 +40,7 @@ func isReservedBoardOutputComponent(name string) bool {
 		return true
 	}
 	switch lower {
-	case "index", "layers", "scenarios", "steps":
+	case "index", "layers", "scenarios", "steps", boardOutputManifestName:
 		return true
 	default:
 		return false
@@ -43,7 +48,7 @@ func isReservedBoardOutputComponent(name string) bool {
 }
 
 func isPortableBoardOutputComponent(name string) bool {
-	if name == "" || name == "." || name == ".." || strings.HasSuffix(name, ".") || strings.HasSuffix(name, " ") {
+	if name == "" || !utf8.ValidString(name) || len(name) > maxPortableBoardOutputComponentBytes || name == "." || name == ".." || strings.HasSuffix(name, ".") || strings.HasSuffix(name, " ") {
 		return false
 	}
 	if !filepath.IsLocal(name) || filepath.IsAbs(name) || filepath.VolumeName(name) != "" || strings.HasPrefix(name, "/") || strings.HasPrefix(name, `\`) {
@@ -57,13 +62,15 @@ func isPortableBoardOutputComponent(name string) bool {
 
 	// Windows reserves these names even when they have an extension.
 	base := name
-	if i := strings.IndexByte(base, '.'); i >= 0 {
+	if i := strings.IndexAny(base, ".:"); i >= 0 {
 		base = base[:i]
 	}
+	base = strings.TrimRight(base, " ")
 	switch strings.ToUpper(base) {
 	case "CON", "PRN", "AUX", "NUL", "CLOCK$",
 		"COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
-		"LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9":
+		"LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+		"COM¹", "COM²", "COM³", "LPT¹", "LPT²", "LPT³", "CONIN$", "CONOUT$":
 		return false
 	}
 	return true
@@ -194,33 +201,77 @@ func planBoardOutput(paths boardOutputPaths, diagram *d2target.Diagram) (boardOu
 }
 
 func validateBoardOutputPaths(outputPath string, diagram *d2target.Diagram) error {
-	return validateBoardOutputPathsRecursive("root", newBoardOutputPaths(outputPath), diagram, make(map[string]string))
+	claims := &boardOutputClaims{
+		files: make(map[string]boardOutputClaim),
+		dirs:  make(map[string]boardOutputClaim),
+	}
+	return validateBoardOutputPathsRecursive("root", newBoardOutputPaths(outputPath), diagram, claims)
 }
 
-func validateBoardOutputPathsRecursive(diagramPath string, outputPaths boardOutputPaths, diagram *d2target.Diagram, seen map[string]string) error {
+type boardOutputClaim struct {
+	diagramPath string
+	path        string
+}
+
+type boardOutputClaims struct {
+	files map[string]boardOutputClaim
+	dirs  map[string]boardOutputClaim
+}
+
+func (c *boardOutputClaims) addFile(diagramPath, path string) error {
+	absolutePath, err := filepath.Abs(path)
+	if err != nil {
+		return err
+	}
+	key := boardOutputCollisionKey(absolutePath)
+	if previous, ok := c.files[key]; ok {
+		return fmt.Errorf("boards %q and %q resolve to the same output path %q", previous.diagramPath, diagramPath, path)
+	}
+	if previous, ok := c.dirs[key]; ok {
+		return fmt.Errorf("board %q output file %q collides with a directory required by board %q", diagramPath, path, previous.diagramPath)
+	}
+
+	dir := filepath.Dir(absolutePath)
+	for {
+		dirKey := boardOutputCollisionKey(dir)
+		if previous, ok := c.files[dirKey]; ok {
+			return fmt.Errorf("board %q output file %q requires a directory occupied by board %q output %q", diagramPath, path, previous.diagramPath, previous.path)
+		}
+		if _, ok := c.dirs[dirKey]; !ok {
+			c.dirs[dirKey] = boardOutputClaim{diagramPath: diagramPath, path: dir}
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+	c.files[key] = boardOutputClaim{diagramPath: diagramPath, path: path}
+	return nil
+}
+
+func validateBoardOutputPathsRecursive(diagramPath string, outputPaths boardOutputPaths, diagram *d2target.Diagram, claims *boardOutputClaims) error {
 	plan, err := planBoardOutput(outputPaths, diagram)
 	if err != nil {
 		return err
 	}
 	if !diagram.IsFolderOnly {
-		key := boardOutputCollisionKey(plan.board.displayPath)
-		if previous, ok := seen[key]; ok {
-			return fmt.Errorf("boards %q and %q resolve to the same output path %q", previous, diagramPath, plan.board.displayPath)
+		if err := claims.addFile(diagramPath, plan.board.displayPath); err != nil {
+			return err
 		}
-		seen[key] = diagramPath
 	}
 	for _, child := range diagram.Layers {
-		if err := validateBoardOutputPathsRecursive(diagramPath+".layers."+child.Name, plan.layers, child, seen); err != nil {
+		if err := validateBoardOutputPathsRecursive(diagramPath+".layers."+child.Name, plan.layers, child, claims); err != nil {
 			return err
 		}
 	}
 	for _, child := range diagram.Scenarios {
-		if err := validateBoardOutputPathsRecursive(diagramPath+".scenarios."+child.Name, plan.scenarios, child, seen); err != nil {
+		if err := validateBoardOutputPathsRecursive(diagramPath+".scenarios."+child.Name, plan.scenarios, child, claims); err != nil {
 			return err
 		}
 	}
 	for _, child := range diagram.Steps {
-		if err := validateBoardOutputPathsRecursive(diagramPath+".steps."+child.Name, plan.steps, child, seen); err != nil {
+		if err := validateBoardOutputPathsRecursive(diagramPath+".steps."+child.Name, plan.steps, child, claims); err != nil {
 			return err
 		}
 	}
@@ -228,17 +279,21 @@ func validateBoardOutputPathsRecursive(diagramPath string, outputPaths boardOutp
 }
 
 func boardOutputCollisionKey(path string) string {
-	return norm.NFC.String(strings.ToLower(filepath.Clean(path)))
+	return norm.NFC.String(cases.Fold().String(filepath.Clean(path)))
 }
 
-// boardOutputWorkspace keeps all content-derived paths inside a directory
-// created by this process. Publishing merges generated files into an existing
-// output tree without recursively deleting that tree or unrelated files.
+// boardOutputWorkspace keeps all content-derived paths inside a private
+// directory created by this process. Publishing transactionally replaces the
+// current generated files, removes only unchanged stale generated files, and
+// preserves unrelated files in an existing output tree.
 type boardOutputWorkspace struct {
 	finalRoot string
 	stageRoot string
 	stageInfo fs.FileInfo
 	extension string
+	// beforePublish is set only by tests to inject a deterministic failure at
+	// a specific visible mutation boundary.
+	beforePublish func(string) error
 }
 
 func newBoardOutputWorkspace(outputPath string) (*boardOutputWorkspace, error) {
@@ -253,17 +308,6 @@ func newBoardOutputWorkspace(outputPath string) (*boardOutputWorkspace, error) {
 	stageRoot, err := os.MkdirTemp(parent, ".d2-board-output-")
 	if err != nil {
 		return nil, fmt.Errorf("create board output staging directory: %w", err)
-	}
-	if err := os.Chmod(stageRoot, 0o755); err != nil {
-		return nil, errors.Join(
-			fmt.Errorf("set board output staging permissions: %w", err),
-			func() error {
-				if cleanupErr := os.Remove(stageRoot); cleanupErr != nil {
-					return fmt.Errorf("remove board output staging directory %q: %w", stageRoot, cleanupErr)
-				}
-				return nil
-			}(),
-		)
 	}
 	stageInfo, err := os.Lstat(stageRoot)
 	if err != nil {
@@ -317,10 +361,62 @@ func (w *boardOutputWorkspace) discard() error {
 	if stageInfo.Mode()&os.ModeSymlink != 0 || !stageInfo.IsDir() || !os.SameFile(w.stageInfo, stageInfo) {
 		return fmt.Errorf("refusing to remove replaced board output staging path %q", stageRoot)
 	}
-	if err := os.RemoveAll(stageRoot); err != nil {
-		return fmt.Errorf("remove board output staging directory %q: %w", stageRoot, err)
+	stage, err := os.OpenRoot(stageRoot)
+	if err != nil {
+		return fmt.Errorf("open board output staging directory %q: %w", stageRoot, err)
+	}
+	openedInfo, err := stage.Stat(".")
+	if err != nil || !os.SameFile(w.stageInfo, openedInfo) {
+		return errors.Join(
+			fmt.Errorf("board output staging path %q changed while opening it", stageRoot),
+			err,
+			stage.Close(),
+		)
+	}
+	directory, err := stage.Open(".")
+	if err != nil {
+		return errors.Join(fmt.Errorf("open board output staging entries: %w", err), stage.Close())
+	}
+	entries, err := directory.ReadDir(-1)
+	if closeErr := directory.Close(); closeErr != nil {
+		err = errors.Join(err, closeErr)
+	}
+	if err != nil {
+		return errors.Join(fmt.Errorf("read board output staging entries: %w", err), stage.Close())
+	}
+	for _, entry := range entries {
+		if err := stage.RemoveAll(entry.Name()); err != nil {
+			return errors.Join(
+				fmt.Errorf("remove board output staging entry %q: %w", entry.Name(), err),
+				stage.Close(),
+			)
+		}
+	}
+	if err := stage.Close(); err != nil {
+		return fmt.Errorf("close board output staging directory %q: %w", stageRoot, err)
+	}
+	stageInfo, err = os.Lstat(stageRoot)
+	if err != nil {
+		return fmt.Errorf("inspect emptied board output staging directory %q: %w", stageRoot, err)
+	}
+	if stageInfo.Mode()&os.ModeSymlink != 0 || !stageInfo.IsDir() || !os.SameFile(w.stageInfo, stageInfo) {
+		return fmt.Errorf("refusing to remove replaced board output staging path %q", stageRoot)
+	}
+	if err := os.Remove(stageRoot); err != nil {
+		return fmt.Errorf("remove emptied board output staging directory %q: %w", stageRoot, err)
 	}
 	w.stageRoot = ""
+	return nil
+}
+
+func (w *boardOutputWorkspace) validateStageRoot() error {
+	stageInfo, err := os.Lstat(w.stageRoot)
+	if err != nil {
+		return fmt.Errorf("inspect board output staging directory %q: %w", w.stageRoot, err)
+	}
+	if stageInfo.Mode()&os.ModeSymlink != 0 || !stageInfo.IsDir() || !os.SameFile(w.stageInfo, stageInfo) {
+		return fmt.Errorf("board output staging path %q was replaced", w.stageRoot)
+	}
 	return nil
 }
 
@@ -331,47 +427,7 @@ type stagedBoardOutput struct {
 }
 
 func (w *boardOutputWorkspace) publish() (touched bool, err error) {
-	defer func() {
-		if cleanupErr := w.discard(); cleanupErr != nil {
-			err = errors.Join(err, cleanupErr)
-		}
-	}()
-
-	if err := validateBoardOutputRoot(w.finalRoot); err != nil {
-		return false, err
-	}
-	if _, err := os.Lstat(w.finalRoot); errors.Is(err, os.ErrNotExist) {
-		if err := os.Rename(w.stageRoot, w.finalRoot); err != nil {
-			return false, fmt.Errorf("publish board output tree: %w", err)
-		}
-		w.stageRoot = ""
-		return true, nil
-	} else if err != nil {
-		return false, fmt.Errorf("inspect board output root: %w", err)
-	}
-
-	entries, err := w.preflightMerge()
-	if err != nil {
-		return false, err
-	}
-	for _, entry := range entries {
-		destination := filepath.Join(w.finalRoot, entry.rel)
-		if entry.dir {
-			if entry.rel == "." {
-				continue
-			}
-			if err := ensureRealDirectory(destination, entry.mode.Perm()); err != nil {
-				return touched, err
-			}
-			continue
-		}
-		source := filepath.Join(w.stageRoot, entry.rel)
-		if err := publishBoardOutputFile(source, destination, entry.mode.Perm()); err != nil {
-			return touched, err
-		}
-		touched = true
-	}
-	return touched, nil
+	return publishBoardOutputWorkspace(w)
 }
 
 func (w *boardOutputWorkspace) preflightMerge() ([]stagedBoardOutput, error) {
@@ -415,93 +471,4 @@ func (w *boardOutputWorkspace) preflightMerge() ([]stagedBoardOutput, error) {
 		return nil, fmt.Errorf("preflight board output tree: %w", err)
 	}
 	return entries, nil
-}
-
-func ensureRealDirectory(path string, mode fs.FileMode) error {
-	info, err := os.Lstat(path)
-	if errors.Is(err, os.ErrNotExist) {
-		if err := os.Mkdir(path, mode); err != nil {
-			return fmt.Errorf("create board output directory %q: %w", path, err)
-		}
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
-		return fmt.Errorf("board output directory %q is not a real directory", path)
-	}
-	return nil
-}
-
-func publishBoardOutputFile(source, destination string, mode fs.FileMode) (err error) {
-	input, err := os.Open(source)
-	if err != nil {
-		return fmt.Errorf("open staged board output %q: %w", source, err)
-	}
-	defer func() {
-		err = errors.Join(err, input.Close())
-	}()
-
-	temporary, err := os.CreateTemp(filepath.Dir(destination), ".d2-board-file-")
-	if err != nil {
-		return fmt.Errorf("create temporary board output for %q: %w", destination, err)
-	}
-	temporaryPath := temporary.Name()
-	defer func() {
-		if removeErr := os.Remove(temporaryPath); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
-			err = errors.Join(err, removeErr)
-		}
-	}()
-
-	if _, err := io.Copy(temporary, input); err != nil {
-		return errors.Join(
-			fmt.Errorf("copy board output to %q: %w", destination, err),
-			temporary.Close(),
-		)
-	}
-	if err := temporary.Chmod(mode); err != nil {
-		return errors.Join(
-			fmt.Errorf("set board output permissions for %q: %w", destination, err),
-			temporary.Close(),
-		)
-	}
-	if err := temporary.Close(); err != nil {
-		return fmt.Errorf("close temporary board output for %q: %w", destination, err)
-	}
-
-	renameErr := os.Rename(temporaryPath, destination)
-	if renameErr == nil {
-		return nil
-	}
-
-	// Windows does not replace an existing file with os.Rename. Move the old
-	// regular file aside, install the completed replacement, then remove it.
-	destinationInfo, statErr := os.Lstat(destination)
-	if statErr != nil {
-		return fmt.Errorf("publish board output %q: %w", destination, renameErr)
-	}
-	if !destinationInfo.Mode().IsRegular() {
-		return fmt.Errorf("refusing to replace non-regular board output %q", destination)
-	}
-	backupPath := temporaryPath + ".old"
-	if renameErr := os.Rename(destination, backupPath); renameErr != nil {
-		return fmt.Errorf("prepare existing board output %q for replacement: %w", destination, renameErr)
-	}
-	if renameErr := os.Rename(temporaryPath, destination); renameErr != nil {
-		rollbackErr := os.Rename(backupPath, destination)
-		return errors.Join(
-			fmt.Errorf("publish board output %q: %w", destination, renameErr),
-			func() error {
-				if rollbackErr != nil {
-					return fmt.Errorf("restore existing board output %q: %w", destination, rollbackErr)
-				}
-				return nil
-			}(),
-		)
-	}
-	if err := os.Remove(backupPath); err != nil {
-		return fmt.Errorf("remove replaced board output backup %q: %w", backupPath, err)
-	}
-	return nil
 }
