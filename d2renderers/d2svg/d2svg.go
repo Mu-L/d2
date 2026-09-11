@@ -2882,6 +2882,10 @@ func validateRenderLinks(diagram *d2target.Diagram) error {
 // validated. Keeping this internal lets RenderMultiboard avoid repeatedly
 // walking every descendant subtree.
 func renderValidated(diagram *d2target.Diagram, opts *RenderOpts) ([]byte, error) {
+	if err := validateRenderPaints(diagram, opts); err != nil {
+		return nil, err
+	}
+
 	sketch := false
 	pad := DEFAULT_PADDING
 	tl, br := diagram.BoundingBox()
@@ -3193,7 +3197,7 @@ func renderValidated(diagram *d2target.Diagram, opts *RenderOpts) ([]byte, error
 	bufStr := buf.String()
 	patternDefs := ""
 	for _, pattern := range d2ast.FillPatterns {
-		if strings.Contains(bufStr, fmt.Sprintf("%s-overlay", pattern)) || diagram.Root.FillPattern == pattern {
+		if strings.Contains(bufStr, fmt.Sprintf("%s-overlay", pattern)) || strings.EqualFold(diagram.Root.FillPattern, pattern) {
 			if patternDefs == "" {
 				fmt.Fprint(upperBuf, `<style type="text/css"><![CDATA[`)
 			}
@@ -3275,6 +3279,12 @@ func renderValidated(diagram *d2target.Diagram, opts *RenderOpts) ([]byte, error
 }
 
 func ThemeCSS(diagramHash string, themeID *int64, darkThemeID *int64, overrides, darkOverrides *d2target.ThemeOverrides) (stylesheet string, err error) {
+	if err := validateThemeOverrides(overrides, "theme override"); err != nil {
+		return "", err
+	}
+	if err := validateThemeOverrides(darkOverrides, "dark theme override"); err != nil {
+		return "", err
+	}
 	if themeID == nil {
 		themeID = &d2themescatalog.NeutralDefault.ID
 	}

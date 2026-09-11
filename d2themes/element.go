@@ -3,6 +3,7 @@ package d2themes
 import (
 	"fmt"
 	"math"
+	"strings"
 
 	"github.com/d2lang/d2/lib/color"
 	"github.com/d2lang/d2/lib/svg"
@@ -237,13 +238,14 @@ func (el *ThemableElement) Render() string {
 	}
 
 	out += " />"
-	if el.FillPattern != "" && el.FillPattern != "none" {
+	fillPattern := strings.ToLower(el.FillPattern)
+	if fillPattern != "" && fillPattern != "none" {
 		patternEl := el.Copy()
 		patternEl.Fill = ""
 		patternEl.Stroke = ""
 		patternEl.BackgroundColor = ""
 		patternEl.Color = ""
-		patternEl.ClassName = fmt.Sprintf("%s-overlay", el.FillPattern)
+		patternEl.ClassName = fmt.Sprintf("%s-overlay", fillPattern)
 		patternEl.FillPattern = ""
 		out += patternEl.Render()
 	}
