@@ -48,6 +48,18 @@ import (
 	"github.com/d2lang/d2/lib/version"
 )
 
+func privateNetworkEnvDefault(ms *xmain.State) (bool, error) {
+	const key = "D2_ALLOW_PRIVATE_NETWORK"
+	switch value := ms.Env.Getenv(key); value {
+	case "", "0", "false":
+		return false, nil
+	case "1", "true":
+		return true, nil
+	default:
+		return false, xmain.UsageErrorf(`invalid environment variable %s. Expected bool. Found "%s".`, key, value)
+	}
+}
+
 func Run(ctx context.Context, ms *xmain.State) (err error) {
 	ctx = log.WithDefault(ctx)
 	// These should be kept up-to-date with the d2 man page
@@ -61,7 +73,11 @@ func Run(ctx context.Context, ms *xmain.State) (err error) {
 	if err != nil {
 		return err
 	}
-	allowPrivateNetworkFlag, err := ms.Opts.Bool("D2_ALLOW_PRIVATE_NETWORK", "allow-private-network", "", false, "allow remote image assets to access private, loopback, and link-local networks. Only enable this for trusted diagrams")
+	allowPrivateNetworkDefault, err := privateNetworkEnvDefault(ms)
+	if err != nil {
+		return err
+	}
+	allowPrivateNetworkFlag, err := ms.Opts.Bool("", "allow-private-network", "", allowPrivateNetworkDefault, "allow remote image assets to access private, loopback, and link-local networks. Only enable this for trusted diagrams. Can also be set with $D2_ALLOW_PRIVATE_NETWORK")
 	if err != nil {
 		return err
 	}
