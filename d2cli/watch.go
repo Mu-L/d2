@@ -30,6 +30,7 @@ import (
 	"github.com/d2lang/d2/d2plugin"
 	"github.com/d2lang/d2/d2renderers/d2fonts"
 	"github.com/d2lang/d2/d2renderers/d2svg"
+	"github.com/d2lang/d2/lib/localfile"
 )
 
 // Enabled with the build tag "dev".
@@ -422,7 +423,10 @@ func (w *watcher) compileLoop(ctx context.Context) error {
 			recompiledPrefix = "re"
 		}
 
-		fs := trackedFS{}
+		// Watch mode is a trusted local CLI workflow, so it may follow imports
+		// anywhere on the host filesystem. Keep that opt-in explicit while using
+		// localfile.Policy to reject directories and other special files.
+		fs := trackedFS{localFiles: localfile.Unrestricted()}
 		w.boardpathMu.Lock()
 		var boardPath []string
 		if w.boardPath != "" {
@@ -658,11 +662,12 @@ func wsHeartbeat(ctx context.Context, c *websocket.Conn) {
 
 // trackedFS is OS's FS with the addition that it tracks which files are opened successfully
 type trackedFS struct {
-	opened []string
+	localFiles localfile.Policy
+	opened     []string
 }
 
 func (tfs *trackedFS) Open(name string) (fs.File, error) {
-	f, err := os.Open(name)
+	f, err := tfs.localFiles.Open(name)
 	if err == nil {
 		tfs.opened = append(tfs.opened, name)
 	}
