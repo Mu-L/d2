@@ -88,6 +88,74 @@ func TestRootedPolicyRejectsSymlinkEscape(t *testing.T) {
 	}
 }
 
+func TestRootedPolicyPinsDirectoryAcrossPathReplacement(t *testing.T) {
+	if runtime.GOOS == "windows" || runtime.GOOS == "js" || runtime.GOOS == "plan9" {
+		t.Skip("directory identity across renames is not portable to this platform")
+	}
+	parent := t.TempDir()
+	root := filepath.Join(parent, "root")
+	movedRoot := filepath.Join(parent, "moved-root")
+	replacement := filepath.Join(parent, "replacement")
+	if err := os.Mkdir(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(replacement, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "value"), []byte("original"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(replacement, "value"), []byte("replacement"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	policy, err := Rooted(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(root, movedRoot); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(replacement, root); err != nil {
+		t.Fatal(err)
+	}
+
+	file, err := policy.Open("value")
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, readErr := io.ReadAll(file)
+	closeErr := file.Close()
+	if readErr != nil || closeErr != nil {
+		t.Fatalf("read/close pinned file: %v / %v", readErr, closeErr)
+	}
+	if string(data) != "original" {
+		t.Fatalf("Open after root replacement = %q, want original directory", data)
+	}
+}
+
+func TestRootedPolicyCacheScopeIsPerInstance(t *testing.T) {
+	root := t.TempDir()
+	first, err := Rooted(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := Rooted(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstKey, err := first.CacheKey("value")
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondKey, err := second.CacheKey("value")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstKey == secondKey {
+		t.Fatal("distinct rooted policy instances share a cache scope")
+	}
+}
+
 func TestUnrestrictedPolicyIsExplicitAndCacheScoped(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "file")
