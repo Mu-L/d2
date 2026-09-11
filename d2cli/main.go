@@ -406,6 +406,10 @@ func Run(ctx context.Context, ms *xmain.State) (err error) {
 }
 
 func layoutFromArgs(args []string, baseFlags *pflag.FlagSet, fallback string) (string, bool) {
+	if layoutSelectionIsAmbiguous(args, baseFlags) {
+		return fallback, false
+	}
+
 	staged := pflag.NewFlagSet("layout selection", pflag.ContinueOnError)
 	staged.SetOutput(io.Discard)
 	staged.Usage = func() {}
@@ -440,6 +444,89 @@ func layoutFromArgs(args []string, baseFlags *pflag.FlagSet, fallback string) (s
 		return fallback, false
 	}
 	return layout, true
+}
+
+// layoutSelectionIsAmbiguous applies a conservative ordering rule for plugin
+// flags that are not registered yet: a bare unknown flag must not precede a
+// layout selection or override. Such a flag might be boolean and leave the
+// layout token to be parsed, or it might require a value and consume that same
+// token. Attached values are unambiguous and remain supported.
+//
+// Known base flags are skipped using their real pflag arity so a layout-looking
+// value of --browser (or another known value flag) is not mistaken for a
+// selection. Once a bare unknown is found, the suffix check intentionally also
+// looks past --: a value-taking plugin flag could consume that terminator.
+func layoutSelectionIsAmbiguous(args []string, baseFlags *pflag.FlagSet) bool {
+	layoutFlag := baseFlags.Lookup("layout")
+	if layoutFlag == nil {
+		return true
+	}
+
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if len(arg) < 2 || arg[0] != '-' {
+			continue
+		}
+		if arg == "--" {
+			break
+		}
+		if strings.HasPrefix(arg, "--") {
+			name, _, hasAttachedValue := strings.Cut(arg[2:], "=")
+			flag := baseFlags.Lookup(name)
+			if flag == nil {
+				if !hasAttachedValue && argsContainLayoutSyntax(args[i+1:], layoutFlag) {
+					return true
+				}
+				continue
+			}
+			if !hasAttachedValue && flag.NoOptDefVal == "" && i+1 < len(args) {
+				i++
+			}
+			continue
+		}
+
+		shorthands := arg[1:]
+		for len(shorthands) > 0 {
+			flag := baseFlags.ShorthandLookup(shorthands[:1])
+			hasAttachedValue := len(shorthands) > 1 && shorthands[1] == '='
+			if flag == nil {
+				containsLayoutShorthand := layoutFlag.Shorthand != "" && strings.Contains(shorthands[1:], layoutFlag.Shorthand)
+				if !hasAttachedValue && (containsLayoutShorthand || argsContainLayoutSyntax(args[i+1:], layoutFlag)) {
+					return true
+				}
+				if hasAttachedValue {
+					break
+				}
+				shorthands = shorthands[1:]
+				continue
+			}
+			if hasAttachedValue || flag.NoOptDefVal == "" {
+				if !hasAttachedValue && len(shorthands) == 1 && i+1 < len(args) {
+					i++
+				}
+				break
+			}
+			shorthands = shorthands[1:]
+		}
+	}
+	return false
+}
+
+func argsContainLayoutSyntax(args []string, layoutFlag *pflag.Flag) bool {
+	long := "--" + layoutFlag.Name
+	for _, arg := range args {
+		if arg == long || strings.HasPrefix(arg, long+"=") || shortsContainLayoutSyntax(arg, layoutFlag) {
+			return true
+		}
+	}
+	return false
+}
+
+func shortsContainLayoutSyntax(arg string, layoutFlag *pflag.Flag) bool {
+	if layoutFlag.Shorthand == "" || len(arg) < 2 || arg[0] != '-' || arg[1] == '-' {
+		return false
+	}
+	return strings.Contains(arg[1:], layoutFlag.Shorthand)
 }
 
 type stagedFlagValue struct {

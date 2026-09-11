@@ -120,6 +120,16 @@ func TestLayoutFromArgs(t *testing.T) {
 		{name: "end of flags", args: []string{"--", "--layout=elk"}, want: "dagre", wantOK: true},
 		{name: "help terminates", args: []string{"--help", "--layout=external"}, want: "dagre", wantOK: false},
 		{name: "known flag consumes layout", args: []string{"--browser", "--layout=external", "--version"}, want: "dagre", wantOK: true},
+		{name: "known shorthand consumes layout", args: []string{"-h", "--layout=external", "--version"}, want: "dagre", wantOK: true},
+		{name: "unknown value may consume layout", args: []string{"--external-option", "--layout=external", "--version"}, want: "dagre", wantOK: false},
+		{name: "unknown flag may be boolean", args: []string{"--external-toggle", "--layout=external", "--version"}, want: "dagre", wantOK: false},
+		{name: "unknown shorthand before layout", args: []string{"-x", "--layout=external", "--version"}, want: "dagre", wantOK: false},
+		{name: "unknown before later override", args: []string{"--layout=external", "--external-option", "--layout=elk"}, want: "dagre", wantOK: false},
+		{name: "unknown may consume terminator", args: []string{"--external-option", "--", "--layout=external"}, want: "dagre", wantOK: false},
+		{name: "attached unknown is unambiguous", args: []string{"--external-option=value", "--layout=external"}, want: "external", wantOK: true},
+		{name: "attached unknown after layout", args: []string{"--layout=external", "--external-option=value"}, want: "external", wantOK: true},
+		{name: "bare unknown after final layout", args: []string{"--layout=external", "--external-option", "value"}, want: "external", wantOK: true},
+		{name: "known boolean before layout", args: []string{"--sketch", "--layout=external"}, want: "external", wantOK: true},
 	}
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -127,6 +137,7 @@ func TestLayoutFromArgs(t *testing.T) {
 			flags.StringP("layout", "l", "dagre", "")
 			flags.BoolP("sketch", "s", false, "")
 			flags.String("browser", "", "")
+			flags.StringP("host", "h", "localhost", "")
 			flags.Bool("version", false, "")
 			got, gotOK := layoutFromArgs(tc.args, flags, "dagre")
 			if got != tc.want || gotOK != tc.wantOK {
@@ -142,6 +153,7 @@ func TestRunExecutesOnlyParserSelectedExternalPlugin(t *testing.T) {
 		args        []string
 		wantCalls   [][]string
 		wantNoCalls bool
+		wantErr     bool
 	}{
 		{
 			name:        "help terminates before layout",
@@ -158,6 +170,34 @@ func TestRunExecutesOnlyParserSelectedExternalPlugin(t *testing.T) {
 			args:      []string{"-slexternal", "layout"},
 			wantCalls: [][]string{{"info"}, {"flags"}},
 		},
+		{
+			name:        "unknown value flag may consume layout",
+			args:        []string{"--external-option", "--layout=external", "--version"},
+			wantNoCalls: true,
+			wantErr:     true,
+		},
+		{
+			name:        "unknown flag may instead be boolean",
+			args:        []string{"--external-toggle", "--layout=external", "--version"},
+			wantNoCalls: true,
+			wantErr:     true,
+		},
+		{
+			name:        "unknown flag before later layout override",
+			args:        []string{"--layout=dagre", "--external-option", "--layout=external", "--version"},
+			wantNoCalls: true,
+			wantErr:     true,
+		},
+		{
+			name:      "attached plugin option after layout is unambiguous",
+			args:      []string{"--layout=external", "--external-option=value", "layout"},
+			wantCalls: [][]string{{"info"}, {"flags"}},
+		},
+		{
+			name:      "bare plugin option after final layout is unambiguous",
+			args:      []string{"--layout=external", "--external-option", "value", "layout"},
+			wantCalls: [][]string{{"info"}, {"flags"}},
+		},
 	}
 
 	for _, tc := range testCases {
@@ -170,8 +210,9 @@ func TestRunExecutesOnlyParserSelectedExternalPlugin(t *testing.T) {
 			t.Setenv(pluginDiscoveryHelperNameEnv, "external")
 			t.Setenv("PATH", directory)
 
-			if err := runPluginDiscoveryCLI(t, directory, tc.args...); err != nil {
-				t.Fatal(err)
+			err := runPluginDiscoveryCLI(t, directory, tc.args...)
+			if (err != nil) != tc.wantErr {
+				t.Errorf("Run() error = %v, wantErr %t", err, tc.wantErr)
 			}
 			calls := readPluginDiscoveryCalls(t, marker)
 			if tc.wantNoCalls && len(calls) != 0 {
