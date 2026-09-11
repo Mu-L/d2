@@ -8,7 +8,9 @@ import (
 	"crypto/rand"
 	_ "embed"
 	"encoding/base64"
+	"encoding/xml"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -404,6 +406,96 @@ func TestInlineRemoteCompressedSVG(t *testing.T) {
 			}
 			tassert.Equal(t, rawSVG, decoded)
 		})
+	}
+}
+
+func TestInlineRemoteContentTypeIsSafeAndCanonical(t *testing.T) {
+	ctx := log.With(context.Background(), testlog.New(t))
+	originalTransport := httpClient.Transport
+	t.Cleanup(func() {
+		httpClient.Transport = originalTransport
+	})
+	imageURL := "https://example.com/asset"
+	sampleSVG := []byte(fmt.Sprintf(`<svg xmlns="http://www.w3.org/2000/svg"><image href="%s" /></svg>`, imageURL))
+	rawSVG := []byte(`<svg xmlns="http://www.w3.org/2000/svg"/>`)
+
+	for _, tc := range []struct {
+		name        string
+		contentType string
+		body        []byte
+		wantType    string
+	}{
+		{
+			name:        "malicious quoted header",
+			contentType: `image/svg+xml" onerror="alert(1)" data-x="`,
+			body:        rawSVG,
+			wantType:    "image/svg+xml",
+		},
+		{
+			name:        "parameterized SVG",
+			contentType: "image/svg+xml; charset=utf-8",
+			body:        rawSVG,
+			wantType:    "image/svg+xml",
+		},
+		{
+			name:        "parameterized PNG alias",
+			contentType: "image/x-png; charset=binary",
+			body:        testPNGFile,
+			wantType:    "image/png",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			imgCache = sync.Map{}
+			httpClient.Transport = roundTripFunc(func(req *http.Request) *http.Response {
+				if req.URL.String() != imageURL {
+					t.Fatalf("unexpected URL %s", req.URL)
+				}
+				respRecorder := httptest.NewRecorder()
+				respRecorder.Header().Set("Content-Type", tc.contentType)
+				respRecorder.WriteHeader(http.StatusOK)
+				_, _ = respRecorder.Write(tc.body)
+				return respRecorder.Result()
+			})
+
+			out, err := BundleRemote(ctx, simplelog.FromLibLog(ctx), sampleSVG, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantHref := "data:" + tc.wantType + ";base64," + base64.StdEncoding.EncodeToString(tc.body)
+			assertBundledImageHref(t, out, wantHref)
+		})
+	}
+}
+
+func assertBundledImageHref(t *testing.T, source []byte, wantHref string) {
+	t.Helper()
+
+	decoder := xml.NewDecoder(bytes.NewReader(source))
+	decoder.Strict = true
+	found := false
+	for {
+		token, err := decoder.Token()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("bundled SVG is not valid XML: %v\n%s", err, source)
+		}
+		start, ok := token.(xml.StartElement)
+		if !ok || start.Name.Local != "image" {
+			continue
+		}
+		for _, attr := range start.Attr {
+			if strings.HasPrefix(strings.ToLower(attr.Name.Local), "on") {
+				t.Fatalf("bundled image contains event handler %q: %s", attr.Name.Local, source)
+			}
+			if attr.Name.Local == "href" && attr.Value == wantHref {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("bundled SVG does not contain href %q: %s", wantHref, source)
 	}
 }
 

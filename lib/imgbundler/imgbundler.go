@@ -24,6 +24,7 @@ import (
 	"github.com/andybalholm/brotli"
 
 	"github.com/d2lang/d2/lib/simplelog"
+	"github.com/d2lang/d2/lib/svg"
 	"github.com/d2lang/util-go/xdefer"
 )
 
@@ -182,20 +183,21 @@ func worker(ctx context.Context, l simplelog.Logger, inputPath string, href []by
 		return nil, err
 	}
 
-	if mimeType == "" {
-		mimeType = sniffMimeType(href, buf, isRemote)
-		l.Debug(fmt.Sprintf("no mimetype provided - sniffed MIME type for %s: %s", string(href), mimeType))
+	declaredMIMEType := mimeType
+	mimeType, ok := canonicalImageMIMEType(declaredMIMEType)
+	if !ok {
+		mimeType, ok = sniffImageMIMEType(href, buf, isRemote)
+		if !ok {
+			mimeType = "application/octet-stream"
+		}
+		l.Debug(fmt.Sprintf("invalid or unsupported mimetype %q - sniffed MIME type for %s: %s", declaredMIMEType, string(href), mimeType))
 	} else {
 		l.Debug(fmt.Sprintf("mimetype provided for %s: %s", string(href), mimeType))
 	}
-	mimeType = strings.Replace(mimeType, "text/xml", "image/svg+xml", 1)
-	if mimeType == "application/octet-stream" && bytes.Contains(buf, []byte("<svg")) {
-		l.Debug(fmt.Sprintf("octet-stream mimetype replaced with svg for %s", string(href)))
-		mimeType = "image/svg+xml"
-	}
 	b64 := base64.StdEncoding.EncodeToString(buf)
+	dataURI := fmt.Sprintf("data:%s;base64,%s", mimeType, b64)
 
-	out := []byte(fmt.Sprintf(`<image href="data:%s;base64,%s"`, mimeType, b64))
+	out := []byte(fmt.Sprintf(`<image href="%s"`, svg.EscapeText(dataURI)))
 	if cacheImages {
 		imgCache.Store(string(href), out)
 	}
@@ -306,8 +308,31 @@ func readDecoded(r io.Reader) ([]byte, error) {
 	return buf, nil
 }
 
-// sniffMimeType sniffs the mime type of href based on its file extension and contents.
-func sniffMimeType(href, buf []byte, isRemote bool) string {
+// canonicalImageMIMEType strictly parses a declared media type and returns a
+// parameter-free image media type suitable for a data URI. Preserve arbitrary
+// valid image subtypes for browser compatibility while normalizing aliases D2
+// has historically supported.
+func canonicalImageMIMEType(value string) (string, bool) {
+	mediaType, _, err := mime.ParseMediaType(value)
+	if err != nil {
+		return "", false
+	}
+	mediaType = strings.ToLower(mediaType)
+	switch mediaType {
+	case "image/jpg", "image/pjpeg":
+		return "image/jpeg", true
+	case "image/x-png":
+		return "image/png", true
+	case "text/xml", "application/xml", "application/svg+xml":
+		return "image/svg+xml", true
+	default:
+		return mediaType, mediaType != "image/*" && strings.HasPrefix(mediaType, "image/")
+	}
+}
+
+// sniffImageMIMEType sniffs the MIME type of href based on its file extension
+// and contents, accepting only values canonicalImageMIMEType can make safe.
+func sniffImageMIMEType(href, buf []byte, isRemote bool) (string, bool) {
 	p := string(href)
 	if isRemote {
 		u, err := url.Parse(html.UnescapeString(p))
@@ -317,9 +342,16 @@ func sniffMimeType(href, buf []byte, isRemote bool) string {
 			p = u.Path
 		}
 	}
-	mimeType := mime.TypeByExtension(path.Ext(p))
-	if mimeType == "" {
-		mimeType = http.DetectContentType(buf)
+	for _, candidate := range []string{
+		mime.TypeByExtension(path.Ext(p)),
+		http.DetectContentType(buf),
+	} {
+		if mimeType, ok := canonicalImageMIMEType(candidate); ok {
+			return mimeType, true
+		}
 	}
-	return mimeType
+	if bytes.Contains(buf, []byte("<svg")) {
+		return "image/svg+xml", true
+	}
+	return "", false
 }
