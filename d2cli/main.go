@@ -9,6 +9,7 @@ import (
 	"io"
 	"io/fs"
 	"log/slog"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/user"
@@ -883,13 +884,37 @@ func compile(ctx context.Context, ms *xmain.State, plugins []d2plugin.Plugin, fs
 		var boards [][]byte
 		var outputWritten bool
 		var err error
+		if animateInterval <= 0 && !noChildren {
+			if err := validateBoardOutputPaths(outputPath, diagram); err != nil {
+				return nil, false, err
+			}
+		}
+		outputPaths := newBoardOutputPaths(outputPath)
+		var outputWorkspace *boardOutputWorkspace
+		if animateInterval <= 0 && outputPath != "-" && (len(diagram.Layers) > 0 || len(diagram.Scenarios) > 0 || len(diagram.Steps) > 0) {
+			outputWorkspace, err = newBoardOutputWorkspace(outputPath)
+			if err != nil {
+				return nil, false, err
+			}
+			outputPaths = outputWorkspace.outputPaths(outputPath)
+		}
 		if noChildren {
 			boards, outputWritten, err = renderSingle(ctx, ms, compileDur, plugin, renderOpts, inputPath, outputPath, bundle, forceAppendix, ruler, diagram, ext, asciiMode, wantPreview)
 		} else {
-			boards, outputWritten, err = render(ctx, ms, compileDur, plugin, renderOpts, inputPath, outputPath, bundle, forceAppendix, ruler, diagram, ext, asciiMode, wantPreview)
+			boards, outputWritten, err = renderToPaths(ctx, ms, compileDur, plugin, renderOpts, inputPath, outputPaths, bundle, forceAppendix, ruler, diagram, ext, asciiMode, wantPreview)
 		}
 		if err != nil {
+			if outputWorkspace != nil {
+				err = errors.Join(err, outputWorkspace.discard())
+				outputWritten = false
+			}
 			return nil, outputWritten, err
+		}
+		if outputWorkspace != nil {
+			outputWritten, err = outputWorkspace.publish()
+			if err != nil {
+				return nil, outputWritten, err
+			}
 		}
 		var out []byte
 		if len(boards) > 0 {
@@ -923,47 +948,15 @@ func compile(ctx context.Context, ms *xmain.State, plugins []d2plugin.Plugin, fs
 }
 
 func resolveLinks(currDiagramPath, outputPath string, diagram *d2target.Diagram) (linkToOutput map[string]string, err error) {
-	if diagram.Name != "" {
-		ext := filepath.Ext(outputPath)
-		outputPath = strings.TrimSuffix(outputPath, ext)
-		outputPath = filepath.Join(outputPath, diagram.Name)
-		outputPath += ext
+	plan, err := planBoardOutput(newBoardOutputPaths(outputPath), diagram)
+	if err != nil {
+		return nil, err
 	}
 
-	boardOutputPath := outputPath
-	if len(diagram.Layers) > 0 || len(diagram.Scenarios) > 0 || len(diagram.Steps) > 0 {
-		ext := filepath.Ext(boardOutputPath)
-		boardOutputPath = strings.TrimSuffix(boardOutputPath, ext)
-		boardOutputPath = filepath.Join(boardOutputPath, "index")
-		boardOutputPath += ext
-	}
-
-	layersOutputPath := outputPath
-	if len(diagram.Scenarios) > 0 || len(diagram.Steps) > 0 {
-		ext := filepath.Ext(layersOutputPath)
-		layersOutputPath = strings.TrimSuffix(layersOutputPath, ext)
-		layersOutputPath = filepath.Join(layersOutputPath, "layers")
-		layersOutputPath += ext
-	}
-	scenariosOutputPath := outputPath
-	if len(diagram.Layers) > 0 || len(diagram.Steps) > 0 {
-		ext := filepath.Ext(scenariosOutputPath)
-		scenariosOutputPath = strings.TrimSuffix(scenariosOutputPath, ext)
-		scenariosOutputPath = filepath.Join(scenariosOutputPath, "scenarios")
-		scenariosOutputPath += ext
-	}
-	stepsOutputPath := outputPath
-	if len(diagram.Layers) > 0 || len(diagram.Scenarios) > 0 {
-		ext := filepath.Ext(stepsOutputPath)
-		stepsOutputPath = strings.TrimSuffix(stepsOutputPath, ext)
-		stepsOutputPath = filepath.Join(stepsOutputPath, "steps")
-		stepsOutputPath += ext
-	}
-
-	linkToOutput = map[string]string{currDiagramPath: boardOutputPath}
+	linkToOutput = map[string]string{currDiagramPath: plan.board.displayPath}
 
 	for _, dl := range diagram.Layers {
-		m, err := resolveLinks(strings.Join([]string{currDiagramPath, "layers", dl.Name}, "."), layersOutputPath, dl)
+		m, err := resolveLinks(strings.Join([]string{currDiagramPath, "layers", dl.Name}, "."), plan.layers.displayPath, dl)
 		if err != nil {
 			return nil, err
 		}
@@ -972,7 +965,7 @@ func resolveLinks(currDiagramPath, outputPath string, diagram *d2target.Diagram)
 		}
 	}
 	for _, dl := range diagram.Scenarios {
-		m, err := resolveLinks(strings.Join([]string{currDiagramPath, "scenarios", dl.Name}, "."), scenariosOutputPath, dl)
+		m, err := resolveLinks(strings.Join([]string{currDiagramPath, "scenarios", dl.Name}, "."), plan.scenarios.displayPath, dl)
 		if err != nil {
 			return nil, err
 		}
@@ -981,7 +974,7 @@ func resolveLinks(currDiagramPath, outputPath string, diagram *d2target.Diagram)
 		}
 	}
 	for _, dl := range diagram.Steps {
-		m, err := resolveLinks(strings.Join([]string{currDiagramPath, "steps", dl.Name}, "."), stepsOutputPath, dl)
+		m, err := resolveLinks(strings.Join([]string{currDiagramPath, "steps", dl.Name}, "."), plan.steps.displayPath, dl)
 		if err != nil {
 			return nil, err
 		}
@@ -1002,7 +995,21 @@ func relink(currDiagramPath string, d *d2target.Diagram, linkToOutput map[string
 					if err != nil {
 						return err
 					}
-					d.Shapes[i].Link = rel
+					d.Shapes[i].Link = boardOutputLink(rel)
+					break
+				}
+			}
+		}
+	}
+	for i, connection := range d.Connections {
+		if connection.Link != "" {
+			for k, v := range linkToOutput {
+				if connection.Link == k {
+					rel, err := filepath.Rel(filepath.Dir(linkToOutput[currDiagramPath]), v)
+					if err != nil {
+						return err
+					}
+					d.Connections[i].Link = boardOutputLink(rel)
 					break
 				}
 			}
@@ -1029,6 +1036,16 @@ func relink(currDiagramPath string, d *d2target.Diagram, linkToOutput map[string
 	return nil
 }
 
+func boardOutputLink(path string) string {
+	parts := strings.Split(filepath.ToSlash(path), "/")
+	for i, part := range parts {
+		if part != "." && part != ".." {
+			parts[i] = url.PathEscape(part)
+		}
+	}
+	return strings.Join(parts, "/")
+}
+
 func postProcess(ctx context.Context, plugin d2plugin.Plugin, in []byte) ([]byte, error) {
 	postProcessor, ok := plugin.(d2plugin.PostProcessor)
 	if !ok {
@@ -1038,62 +1055,38 @@ func postProcess(ctx context.Context, plugin d2plugin.Plugin, in []byte) ([]byte
 }
 
 func render(ctx context.Context, ms *xmain.State, compileDur time.Duration, plugin d2plugin.Plugin, opts d2svg.RenderOpts, inputPath, outputPath string, bundle, forceAppendix bool, ruler *textmeasure.Ruler, diagram *d2target.Diagram, ext exportExtension, asciiMode string, wantPreview bool) (_ [][]byte, written bool, _ error) {
+	return renderToPaths(ctx, ms, compileDur, plugin, opts, inputPath, newBoardOutputPaths(outputPath), bundle, forceAppendix, ruler, diagram, ext, asciiMode, wantPreview)
+}
+
+func renderToPaths(ctx context.Context, ms *xmain.State, compileDur time.Duration, plugin d2plugin.Plugin, opts d2svg.RenderOpts, inputPath string, outputPaths boardOutputPaths, bundle, forceAppendix bool, ruler *textmeasure.Ruler, diagram *d2target.Diagram, ext exportExtension, asciiMode string, wantPreview bool) (_ [][]byte, written bool, _ error) {
 	if ext == PNG {
 		var encoder rasterPNGEncoder
 		defer encoder.close()
-		return renderWithPNGEncoder(ctx, ms, compileDur, plugin, opts, inputPath, outputPath, bundle, forceAppendix, ruler, diagram, ext, asciiMode, wantPreview, &encoder)
+		return renderWithPNGEncoderToPaths(ctx, ms, compileDur, plugin, opts, inputPath, outputPaths, bundle, forceAppendix, ruler, diagram, ext, asciiMode, wantPreview, &encoder)
 	}
-	return renderWithPNGEncoder(ctx, ms, compileDur, plugin, opts, inputPath, outputPath, bundle, forceAppendix, ruler, diagram, ext, asciiMode, wantPreview, nil)
+	return renderWithPNGEncoderToPaths(ctx, ms, compileDur, plugin, opts, inputPath, outputPaths, bundle, forceAppendix, ruler, diagram, ext, asciiMode, wantPreview, nil)
 }
 
 func renderWithPNGEncoder(ctx context.Context, ms *xmain.State, compileDur time.Duration, plugin d2plugin.Plugin, opts d2svg.RenderOpts, inputPath, outputPath string, bundle, forceAppendix bool, ruler *textmeasure.Ruler, diagram *d2target.Diagram, ext exportExtension, asciiMode string, wantPreview bool, pngEncoder *rasterPNGEncoder) (_ [][]byte, written bool, _ error) {
-	if diagram.Name != "" {
-		ext := filepath.Ext(outputPath)
-		outputPath = strings.TrimSuffix(outputPath, ext)
-		outputPath = filepath.Join(outputPath, diagram.Name)
-		outputPath += ext
-	}
+	return renderWithPNGEncoderToPaths(ctx, ms, compileDur, plugin, opts, inputPath, newBoardOutputPaths(outputPath), bundle, forceAppendix, ruler, diagram, ext, asciiMode, wantPreview, pngEncoder)
+}
 
-	boardOutputPath := outputPath
+func renderWithPNGEncoderToPaths(ctx context.Context, ms *xmain.State, compileDur time.Duration, plugin d2plugin.Plugin, opts d2svg.RenderOpts, inputPath string, outputPaths boardOutputPaths, bundle, forceAppendix bool, ruler *textmeasure.Ruler, diagram *d2target.Diagram, ext exportExtension, asciiMode string, wantPreview bool, pngEncoder *rasterPNGEncoder) (_ [][]byte, written bool, _ error) {
+	plan, err := planBoardOutput(outputPaths, diagram)
+	if err != nil {
+		return nil, false, err
+	}
 	if len(diagram.Layers) > 0 || len(diagram.Scenarios) > 0 || len(diagram.Steps) > 0 {
-		if outputPath == "-" {
+		if plan.base.writePath == "-" {
 			// TODO it can if composed into one
 			return nil, false, fmt.Errorf("multiboard output cannot be written to stdout")
 		}
-		// Boards with subboards must be self-contained folders.
-		ext := filepath.Ext(boardOutputPath)
-		boardOutputPath = strings.TrimSuffix(boardOutputPath, ext)
-		os.RemoveAll(boardOutputPath)
-		boardOutputPath = filepath.Join(boardOutputPath, "index")
-		boardOutputPath += ext
-	}
-
-	layersOutputPath := outputPath
-	if len(diagram.Scenarios) > 0 || len(diagram.Steps) > 0 {
-		ext := filepath.Ext(layersOutputPath)
-		layersOutputPath = strings.TrimSuffix(layersOutputPath, ext)
-		layersOutputPath = filepath.Join(layersOutputPath, "layers")
-		layersOutputPath += ext
-	}
-	scenariosOutputPath := outputPath
-	if len(diagram.Layers) > 0 || len(diagram.Steps) > 0 {
-		ext := filepath.Ext(scenariosOutputPath)
-		scenariosOutputPath = strings.TrimSuffix(scenariosOutputPath, ext)
-		scenariosOutputPath = filepath.Join(scenariosOutputPath, "scenarios")
-		scenariosOutputPath += ext
-	}
-	stepsOutputPath := outputPath
-	if len(diagram.Layers) > 0 || len(diagram.Scenarios) > 0 {
-		ext := filepath.Ext(stepsOutputPath)
-		stepsOutputPath = strings.TrimSuffix(stepsOutputPath, ext)
-		stepsOutputPath = filepath.Join(stepsOutputPath, "steps")
-		stepsOutputPath += ext
 	}
 
 	var boards [][]byte
 	for _, dl := range diagram.Layers {
 		childPreview := wantPreview && diagram.IsFolderOnly && len(boards) == 0
-		childrenBoards, childWritten, err := renderWithPNGEncoder(ctx, ms, compileDur, plugin, opts, inputPath, layersOutputPath, bundle, forceAppendix, ruler, dl, ext, asciiMode, childPreview, pngEncoder)
+		childrenBoards, childWritten, err := renderWithPNGEncoderToPaths(ctx, ms, compileDur, plugin, opts, inputPath, plan.layers, bundle, forceAppendix, ruler, dl, ext, asciiMode, childPreview, pngEncoder)
 		written = written || childWritten
 		if err != nil {
 			return boards, written, err
@@ -1102,7 +1095,7 @@ func renderWithPNGEncoder(ctx context.Context, ms *xmain.State, compileDur time.
 	}
 	for _, dl := range diagram.Scenarios {
 		childPreview := wantPreview && diagram.IsFolderOnly && len(boards) == 0
-		childrenBoards, childWritten, err := renderWithPNGEncoder(ctx, ms, compileDur, plugin, opts, inputPath, scenariosOutputPath, bundle, forceAppendix, ruler, dl, ext, asciiMode, childPreview, pngEncoder)
+		childrenBoards, childWritten, err := renderWithPNGEncoderToPaths(ctx, ms, compileDur, plugin, opts, inputPath, plan.scenarios, bundle, forceAppendix, ruler, dl, ext, asciiMode, childPreview, pngEncoder)
 		written = written || childWritten
 		if err != nil {
 			return boards, written, err
@@ -1111,7 +1104,7 @@ func renderWithPNGEncoder(ctx context.Context, ms *xmain.State, compileDur time.
 	}
 	for _, dl := range diagram.Steps {
 		childPreview := wantPreview && diagram.IsFolderOnly && len(boards) == 0
-		childrenBoards, childWritten, err := renderWithPNGEncoder(ctx, ms, compileDur, plugin, opts, inputPath, stepsOutputPath, bundle, forceAppendix, ruler, dl, ext, asciiMode, childPreview, pngEncoder)
+		childrenBoards, childWritten, err := renderWithPNGEncoderToPaths(ctx, ms, compileDur, plugin, opts, inputPath, plan.steps, bundle, forceAppendix, ruler, dl, ext, asciiMode, childPreview, pngEncoder)
 		written = written || childWritten
 		if err != nil {
 			return boards, written, err
@@ -1121,14 +1114,14 @@ func renderWithPNGEncoder(ctx context.Context, ms *xmain.State, compileDur time.
 
 	if !diagram.IsFolderOnly {
 		start := time.Now()
-		out, boardWritten, err := _renderWithPNGEncoder(ctx, ms, plugin, opts, inputPath, boardOutputPath, bundle, forceAppendix, ruler, diagram, ext, asciiMode, wantPreview, pngEncoder)
+		out, boardWritten, err := _renderWithPNGEncoder(ctx, ms, plugin, opts, inputPath, plan.board.writePath, bundle, forceAppendix, ruler, diagram, ext, asciiMode, wantPreview, pngEncoder)
 		written = written || boardWritten
 		if err != nil {
 			return boards, written, err
 		}
 		dur := compileDur + time.Since(start)
 		if opts.MasterID == "" {
-			ms.Log.Success.Printf("successfully compiled %s to %s in %s", ms.HumanPath(inputPath), ms.HumanPath(boardOutputPath), dur)
+			ms.Log.Success.Printf("successfully compiled %s to %s in %s", ms.HumanPath(inputPath), ms.HumanPath(plan.board.displayPath), dur)
 		}
 		boards = append([][]byte{out}, boards...)
 	}
