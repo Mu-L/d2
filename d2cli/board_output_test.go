@@ -489,6 +489,82 @@ func TestBoardOutputPublicationRollsBackWholeTransaction(t *testing.T) {
 	}
 }
 
+func TestBoardOutputPublicationRejectsAncestorSwapWithoutEscapingRoot(t *testing.T) {
+	directory := t.TempDir()
+	outputPath := filepath.Join(directory, "output.svg")
+	outputDirectory := filepath.Join(directory, "output")
+	nestedDirectory := filepath.Join(outputDirectory, "nested")
+	movedDirectory := filepath.Join(directory, "moved-nested")
+	victimDirectory := filepath.Join(directory, "victim")
+	if err := os.MkdirAll(nestedDirectory, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(victimDirectory, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(nestedDirectory, "sentinel"), []byte("keep me"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	probe := filepath.Join(directory, "symlink-probe")
+	if err := os.Symlink(victimDirectory, probe); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if err := os.Remove(probe); err != nil {
+		t.Fatal(err)
+	}
+
+	workspace, err := newBoardOutputWorkspace(outputPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(workspace.stageRoot, "a-created"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(workspace.stageRoot, "nested", "leaf"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace.stageRoot, "nested", "leaf", "board.svg"), []byte("new board"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	swapped := false
+	workspace.beforePublish = func(path string) error {
+		if path != filepath.Join(nestedDirectory, "leaf") {
+			return nil
+		}
+		swapped = true
+		if err := os.Rename(nestedDirectory, movedDirectory); err != nil {
+			return err
+		}
+		return os.Symlink(victimDirectory, nestedDirectory)
+	}
+	touched, err := workspace.publish()
+	if err == nil {
+		t.Fatal("publish() accepted a symlink ancestor installed during publication")
+	}
+	if touched {
+		t.Fatal("publish() reported output touched after rolling back the transaction")
+	}
+	if !swapped {
+		t.Fatal("publication did not reach the injected ancestor swap")
+	}
+	if _, err := os.Stat(filepath.Join(victimDirectory, "leaf")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("publication created a directory outside its root: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(victimDirectory, "leaf", "board.svg")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("publication created a file outside its root: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(outputDirectory, "a-created")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("transaction directory survived rollback: %v", err)
+	}
+	if got, err := os.ReadFile(filepath.Join(movedDirectory, "sentinel")); err != nil || string(got) != "keep me" {
+		t.Fatalf("preexisting nested output = %q, %v; want unchanged", got, err)
+	}
+	if matches, err := filepath.Glob(filepath.Join(directory, ".d2-board-output-*")); err != nil || len(matches) != 0 {
+		t.Fatalf("staging directories after rollback = %v, %v", matches, err)
+	}
+}
+
 func TestBoardOutputPublicationPreservesStaleFileEditedDuringPublish(t *testing.T) {
 	directory := t.TempDir()
 	outputPath := filepath.Join(directory, "output.svg")
