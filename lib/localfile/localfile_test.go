@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"testing"
 )
 
@@ -41,6 +42,7 @@ func TestRootedPolicyContainsOpens(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = policy.Close() })
 
 	for _, name := range []string{"inside.txt", inside} {
 		file, err := policy.Open(name)
@@ -83,6 +85,7 @@ func TestRootedPolicyRejectsSymlinkEscape(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = policy.Close() })
 	if _, err := policy.Open("escape"); err == nil {
 		t.Fatal("Open followed a symlink outside the configured root")
 	}
@@ -112,6 +115,7 @@ func TestRootedPolicyPinsDirectoryAcrossPathReplacement(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = policy.Close() })
 	if err := os.Rename(root, movedRoot); err != nil {
 		t.Fatal(err)
 	}
@@ -139,10 +143,12 @@ func TestRootedPolicyCacheScopeIsPerInstance(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = first.Close() })
 	second, err := Rooted(root)
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = second.Close() })
 	firstKey, err := first.CacheKey("value")
 	if err != nil {
 		t.Fatal(err)
@@ -166,6 +172,7 @@ func TestUnrestrictedPolicyIsExplicitAndCacheScoped(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = rooted.Close() })
 	unrestricted := Unrestricted()
 	rootedKey, err := rooted.CacheKey(path)
 	if err != nil {
@@ -184,5 +191,48 @@ func TestUnrestrictedPolicyIsExplicitAndCacheScoped(t *testing.T) {
 	}
 	if err := file.Close(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestRootedPolicyCloseIsSharedAndCopySafe(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "value"), []byte("ok"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	policy, err := Rooted(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	copies := make([]Policy, 32)
+	for index := range copies {
+		copies[index] = policy
+	}
+	var wg sync.WaitGroup
+	errs := make(chan error, len(copies))
+	for copy := range copies {
+		wg.Add(1)
+		go func(policyCopy Policy) {
+			defer wg.Done()
+			errs <- policyCopy.Close()
+		}(copies[copy])
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+	}
+	if err := policy.Close(); err != nil {
+		t.Fatalf("repeated Close: %v", err)
+	}
+	if _, err := copies[0].Open("value"); err == nil {
+		t.Fatal("Policy copy retained access after shared root was closed")
+	}
+	if err := (Policy{}).Close(); err != nil {
+		t.Fatalf("zero Policy Close: %v", err)
+	}
+	if err := Unrestricted().Close(); err != nil {
+		t.Fatalf("unrestricted Policy Close: %v", err)
 	}
 }

@@ -30,9 +30,6 @@ func TestBundleRemoteNetworkPolicy(t *testing.T) {
 	}))
 	defer server.Close()
 
-	previousClient := httpClient
-	httpClient = server.Client()
-	t.Cleanup(func() { httpClient = previousClient })
 	ctx := log.With(context.Background(), testlog.New(t))
 	logger := simplelog.FromLibLog(ctx)
 
@@ -47,9 +44,6 @@ func TestBundleRemoteNetworkPolicy(t *testing.T) {
 	})
 
 	t.Run("explicit opt-in allows trusted private target", func(t *testing.T) {
-		mappedClient := httpClient
-		httpClient = server.Client()
-		defer func() { httpClient = mappedClient }()
 		before := privateHits.Load()
 		output, err := BundleRemoteWithPolicy(ctx, logger, remoteImageSVG(server.URL+"/private"), false, netpolicy.Policy{AllowPrivateNetworks: true})
 		if err != nil {
@@ -61,16 +55,11 @@ func TestBundleRemoteNetworkPolicy(t *testing.T) {
 	})
 
 	t.Run("cache is separated by policy", func(t *testing.T) {
-		imgCache = newImageCache(maxImageCacheEntries, maxImageCacheBytes)
-		mappedClient := httpClient
-		httpClient = server.Client()
 		before := privateHits.Load()
 		_, err := BundleRemoteWithPolicy(ctx, logger, remoteImageSVG(server.URL+"/private"), true, netpolicy.Policy{AllowPrivateNetworks: true})
 		if err != nil {
-			httpClient = mappedClient
 			t.Fatal(err)
 		}
-		httpClient = mappedClient
 		_, err = BundleRemote(ctx, logger, remoteImageSVG(server.URL+"/private"), true)
 		if err == nil {
 			t.Fatal("public-only request reused a private-policy cache entry")

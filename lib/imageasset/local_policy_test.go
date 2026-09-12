@@ -44,6 +44,7 @@ func TestRootedLocalFilesContainResolution(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = policy.Close() })
 	resolver, err := New(Options{LocalFiles: policy, Limits: generousLimits()})
 	if err != nil {
 		t.Fatal(err)
@@ -86,6 +87,7 @@ func TestRootedLocalFilesRejectSymlinkEscapeAndOversize(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = policy.Close() })
 	limits := generousLimits()
 	limits.MaxFetchedBytes = 1
 	resolver, err := New(Options{LocalFiles: policy, Limits: limits})
@@ -134,6 +136,7 @@ func TestLocalCacheCannotCrossPolicyBoundary(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = rootedPolicy.Close() })
 	rooted, err := New(Options{
 		LocalFiles:     rootedPolicy,
 		Cache:          cache,

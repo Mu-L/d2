@@ -164,6 +164,12 @@ const (
 	imageAssetMaxCount                        = rasterMaxAssets - fontAssetReserve
 	imageAssetMaxCumulativeEncodedBytes int64 = rasterMaxAssetBytes - fontAssetByteReserve
 	imageAssetMaxCumulativeDecodedBytes int64 = rasterMaxDecodedBytes
+	// SVG embedding uses the same strict PNG, JPEG, GIF, WebP, and SVG resolver
+	// as raster export. It has no retained-font reserve, so the complete image
+	// count and byte budget remain available to one output document.
+	svgBundleMaxAssets             = rasterMaxAssets
+	svgBundleMaxEncodedBytes int64 = rasterMaxAssetBytes
+	svgBundleMaxDecodedBytes int64 = rasterMaxDecodedBytes
 	// Paged exports render each board once, so earlier per-board key memos may be
 	// evicted. This cap still retains the complete 512 MiB decoded-raster
 	// budget, 64 MiB of parsed font sources, one maximum-size 32 MiB key memo,
@@ -271,6 +277,7 @@ func buildScene(ctx context.Context, inputPath string, cacheImages bool, diagram
 	if err != nil {
 		return nil, err
 	}
+	defer assetOptions.Resolver.CloseIdleConnections()
 	return buildSceneWithAssets(ctx, diagram, opts, assetOptions)
 }
 
@@ -621,6 +628,7 @@ func renderGIFWithSession(
 	if err != nil {
 		return summary, err
 	}
+	defer assetOptions.Resolver.CloseIdleConnections()
 	fontOptions, err := newFontFallbackOptions(len(boards))
 	if err != nil {
 		return summary, err
@@ -1012,43 +1020,17 @@ func gifSceneAssetOptions(ctx context.Context, inputPath string, cacheImages boo
 }
 
 func newSceneAssetOptions(ctx context.Context, inputPath string, cacheImages bool, limits assetSessionLimits) (*d2scenebuild.AssetOptions, error) {
-	baseDir := ""
-	if inputPath != "" && inputPath != "-" {
-		baseDir = filepath.Dir(inputPath)
-	}
-	var cache imageasset.Cache
-	if cacheImages {
-		assetCacheOnce.Do(func() {
-			assetCache, assetCacheErr = imageasset.NewMemoryCache(imageAssetMaxCount, assetCacheMaxBytes)
-		})
-		if assetCacheErr != nil {
-			return nil, fmt.Errorf("raster export: initialize image cache: %w", assetCacheErr)
-		}
-		cache = assetCache
-	}
-	cacheNamespace := ""
-	if cache != nil {
-		cacheNamespace = assetCacheNamespace
-	}
-	resolver, err := imageasset.New(imageasset.Options{
-		BaseDir:        baseDir,
-		LocalFiles:     localfile.Unrestricted(),
-		HTTPClient:     assetHTTPClient,
-		NetworkPolicy:  netpolicy.FromContext(ctx),
-		Cache:          cache,
-		CacheNamespace: cacheNamespace,
-		Limits: imageasset.Limits{
-			MaxFetchedBytes:           min(imageAssetMaxBytes, limits.maxCumulativeEncodedBytes),
-			MaxEncodedBytes:           min(imageAssetMaxBytes, limits.maxCumulativeEncodedBytes),
-			MaxDecompressedBytes:      min(imageAssetMaxBytes, limits.maxCumulativeEncodedBytes),
-			MaxSVGBytes:               svgMaxBytes,
-			MaxDecodedWidth:           rasterMaxDimension,
-			MaxDecodedHeight:          rasterMaxDimension,
-			MaxDecodedPixels:          limits.maxDecodedPixels,
-			MaxAssets:                 limits.maxAssets,
-			MaxCumulativeEncodedBytes: limits.maxCumulativeEncodedBytes,
-			MaxCumulativeDecodedBytes: limits.maxCumulativeDecodedBytes,
-		},
+	resolver, err := newImageAssetResolver(ctx, inputPath, cacheImages, imageasset.Limits{
+		MaxFetchedBytes:           min(imageAssetMaxBytes, limits.maxCumulativeEncodedBytes),
+		MaxEncodedBytes:           min(imageAssetMaxBytes, limits.maxCumulativeEncodedBytes),
+		MaxDecompressedBytes:      min(imageAssetMaxBytes, limits.maxCumulativeEncodedBytes),
+		MaxSVGBytes:               svgMaxBytes,
+		MaxDecodedWidth:           rasterMaxDimension,
+		MaxDecodedHeight:          rasterMaxDimension,
+		MaxDecodedPixels:          limits.maxDecodedPixels,
+		MaxAssets:                 limits.maxAssets,
+		MaxCumulativeEncodedBytes: limits.maxCumulativeEncodedBytes,
+		MaxCumulativeDecodedBytes: limits.maxCumulativeDecodedBytes,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("raster export: initialize image resolver: %w", err)
@@ -1058,6 +1040,51 @@ func newSceneAssetOptions(ctx context.Context, inputPath string, cacheImages boo
 		SVGImportLimits: svgImportLimits(),
 		SVGImportBudget: limits.svgImportBudget,
 	}, nil
+}
+
+func svgBundleResolver(ctx context.Context, inputPath string, cacheImages bool) (*imageasset.Resolver, error) {
+	return newImageAssetResolver(ctx, inputPath, cacheImages, imageasset.Limits{
+		MaxFetchedBytes:           imageAssetMaxBytes,
+		MaxEncodedBytes:           imageAssetMaxBytes,
+		MaxDecompressedBytes:      imageAssetMaxBytes,
+		MaxSVGBytes:               imageAssetMaxBytes,
+		MaxDecodedWidth:           rasterMaxDimension,
+		MaxDecodedHeight:          rasterMaxDimension,
+		MaxDecodedPixels:          rasterMaxPixels,
+		MaxAssets:                 svgBundleMaxAssets,
+		MaxCumulativeEncodedBytes: svgBundleMaxEncodedBytes,
+		MaxCumulativeDecodedBytes: svgBundleMaxDecodedBytes,
+	})
+}
+
+func newImageAssetResolver(ctx context.Context, inputPath string, cacheImages bool, limits imageasset.Limits) (*imageasset.Resolver, error) {
+	baseDir := ""
+	if inputPath != "" && inputPath != "-" {
+		baseDir = filepath.Dir(inputPath)
+	}
+	var cache imageasset.Cache
+	if cacheImages {
+		assetCacheOnce.Do(func() {
+			assetCache, assetCacheErr = imageasset.NewMemoryCache(svgBundleMaxAssets, assetCacheMaxBytes)
+		})
+		if assetCacheErr != nil {
+			return nil, fmt.Errorf("initialize image cache: %w", assetCacheErr)
+		}
+		cache = assetCache
+	}
+	cacheNamespace := ""
+	if cache != nil {
+		cacheNamespace = assetCacheNamespace
+	}
+	return imageasset.New(imageasset.Options{
+		BaseDir:        baseDir,
+		LocalFiles:     localfile.Unrestricted(),
+		HTTPClient:     assetHTTPClient,
+		NetworkPolicy:  netpolicy.FromContext(ctx),
+		Cache:          cache,
+		CacheNamespace: cacheNamespace,
+		Limits:         limits,
+	})
 }
 
 func svgImportLimits() d2svgimport.Limits {
