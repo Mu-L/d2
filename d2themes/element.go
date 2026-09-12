@@ -229,7 +229,7 @@ func (el *ThemableElement) Render() string {
 	}
 
 	if len(el.ClipPath) > 0 {
-		out += fmt.Sprintf(` clip-path="url(#%s)"`, el.ClipPath)
+		out += fmt.Sprintf(` clip-path="url(#%s)"`, svg.EscapeText(el.ClipPath))
 	}
 
 	if len(el.Content) > 0 {
