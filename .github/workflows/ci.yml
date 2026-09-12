@@ -26,6 +26,12 @@ jobs:
         with:
           node-version: "24"
           package-manager-cache: false
+      - name: Build the D2 formatter from this checkout
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/d2-ci-bin"
+          go build -trimpath -o "$RUNNER_TEMP/d2-ci-bin/d2" .
+          echo "$RUNNER_TEMP/d2-ci-bin" >> "$GITHUB_PATH"
       - run: COLOR=1 ./make.sh
         env:
           # Disable chat notifications from the shared CI helper.
