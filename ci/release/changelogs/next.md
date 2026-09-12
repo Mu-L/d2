@@ -2,6 +2,9 @@
 
 #### Improvements 🧹
 
+- Centralize escaped SVG attribute and text serialization, encode unsafe local
+  IDs, and keep deprecated raw element fields only as checked compatibility boundaries.
+
 #### Bugfixes ⛑️
 
 ---
