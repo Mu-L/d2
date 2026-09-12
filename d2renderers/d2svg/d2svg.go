@@ -2478,6 +2478,15 @@ func EmbedFonts(buf *bytes.Buffer, diagramHash, source string, fontFamily *d2fon
 }
 
 func embedFonts(buf *bytes.Buffer, diagramHash, source string, fontFamily *d2fonts.FontFamily, monoFontFamily *d2fonts.FontFamily, corpus string, corpora fontCorpora) {
+	if fontFamily == nil || *fontFamily == "" {
+		family := d2fonts.SourceSansPro
+		fontFamily = &family
+	}
+	if monoFontFamily == nil || *monoFontFamily == "" {
+		family := d2fonts.SourceCodePro
+		monoFontFamily = &family
+	}
+
 	// Markdown generates text that may not exist literally in the D2 source,
 	// such as list markers and decoded entities. Include those rendered runs in
 	// every font subset, including multi-board animations where render-local
@@ -2843,17 +2852,36 @@ func appendOnTriggerLazy(buf *bytes.Buffer, source string, triggers []string, ne
 var DEFAULT_DARK_THEME *int64 = nil // no theme selected
 
 func Render(diagram *d2target.Diagram, opts *RenderOpts) ([]byte, error) {
+	if diagram == nil {
+		return nil, fmt.Errorf("render target is nil")
+	}
+	if err := validateRenderLinks(diagram); err != nil {
+		return nil, err
+	}
+	if err := d2target.ValidateRenderTarget(diagram); err != nil {
+		return nil, err
+	}
+	return renderValidated(diagram, opts)
+}
+
+func validateRenderLinks(diagram *d2target.Diagram) error {
 	for _, targetShape := range diagram.Shapes {
 		if textmeasure.IsDangerousLink(targetShape.Link) {
-			return nil, fmt.Errorf("shape %q uses an unsafe link URL scheme", targetShape.ID)
+			return fmt.Errorf("shape %q uses an unsafe link URL scheme", targetShape.ID)
 		}
 	}
 	for _, connection := range diagram.Connections {
 		if textmeasure.IsDangerousLink(connection.Link) {
-			return nil, fmt.Errorf("connection %q uses an unsafe link URL scheme", connection.ID)
+			return fmt.Errorf("connection %q uses an unsafe link URL scheme", connection.ID)
 		}
 	}
+	return nil
+}
 
+// renderValidated renders one board after its complete target tree has been
+// validated. Keeping this internal lets RenderMultiboard avoid repeatedly
+// walking every descendant subtree.
+func renderValidated(diagram *d2target.Diagram, opts *RenderOpts) ([]byte, error) {
 	sketch := false
 	pad := DEFAULT_PADDING
 	tl, br := diagram.BoundingBox()
@@ -3520,23 +3548,30 @@ func hash(s string) string {
 }
 
 func RenderMultiboard(diagram *d2target.Diagram, opts *RenderOpts) ([][]byte, error) {
+	if err := d2target.ValidateRenderTarget(diagram); err != nil {
+		return nil, err
+	}
+	return renderMultiboard(diagram, opts)
+}
+
+func renderMultiboard(diagram *d2target.Diagram, opts *RenderOpts) ([][]byte, error) {
 	var boards [][]byte
 	for _, dl := range diagram.Layers {
-		childrenBoards, err := RenderMultiboard(dl, opts)
+		childrenBoards, err := renderMultiboard(dl, opts)
 		if err != nil {
 			return nil, err
 		}
 		boards = append(boards, childrenBoards...)
 	}
 	for _, dl := range diagram.Scenarios {
-		childrenBoards, err := RenderMultiboard(dl, opts)
+		childrenBoards, err := renderMultiboard(dl, opts)
 		if err != nil {
 			return nil, err
 		}
 		boards = append(boards, childrenBoards...)
 	}
 	for _, dl := range diagram.Steps {
-		childrenBoards, err := RenderMultiboard(dl, opts)
+		childrenBoards, err := renderMultiboard(dl, opts)
 		if err != nil {
 			return nil, err
 		}
@@ -3544,7 +3579,10 @@ func RenderMultiboard(diagram *d2target.Diagram, opts *RenderOpts) ([][]byte, er
 	}
 
 	if !diagram.IsFolderOnly {
-		out, err := Render(diagram, opts)
+		if err := validateRenderLinks(diagram); err != nil {
+			return boards, err
+		}
+		out, err := renderValidated(diagram, opts)
 		if err != nil {
 			return boards, err
 		}

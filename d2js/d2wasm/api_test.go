@@ -8,7 +8,78 @@ import (
 	"sync"
 	"syscall/js"
 	"testing"
+
+	"github.com/d2lang/d2/d2target"
 )
+
+func TestRenderRejectsMalformedDiagramBeforeBoardTraversal(t *testing.T) {
+	request := RenderRequest{
+		Diagram: &d2target.Diagram{Layers: []*d2target.Diagram{nil}},
+	}
+	encoded, err := json.Marshal(request)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+
+	call := wrapWASMCall(Render)
+	defer call.Release()
+	got := call.Invoke(string(encoded)).String()
+	var response WASMResponse
+	if err := json.Unmarshal([]byte(got), &response); err != nil {
+		t.Fatalf("invalid response %q: %v", got, err)
+	}
+	if response.Error == nil || response.Error.Code != 400 || !strings.Contains(response.Error.Message, "root.layers[0] is nil") {
+		t.Fatalf("error = %#v, want invalid-diagram response", response.Error)
+	}
+}
+
+func TestRenderAnimationDefaultsMissingPadding(t *testing.T) {
+	animateInterval := int64(1_000)
+	request := RenderRequest{
+		Diagram: d2target.NewDiagram(),
+		Opts:    &RenderOptions{AnimateInterval: &animateInterval},
+	}
+	response := invokeRenderRequest(t, request)
+	if response.Error != nil {
+		t.Fatalf("Render() error = %#v", response.Error)
+	}
+	if response.Data == nil {
+		t.Fatal("Render() returned no animated SVG")
+	}
+}
+
+func TestRenderRejectsAppendixAnimation(t *testing.T) {
+	animateInterval := int64(1_000)
+	forceAppendix := true
+	request := RenderRequest{
+		Diagram: d2target.NewDiagram(),
+		Opts: &RenderOptions{
+			AnimateInterval: &animateInterval,
+			ForceAppendix:   &forceAppendix,
+		},
+	}
+	response := invokeRenderRequest(t, request)
+	if response.Error == nil || response.Error.Code != 400 || response.Error.Message != "forceAppendix is not supported for animated SVGs" {
+		t.Fatalf("Render() error = %#v, want unsupported-options response", response.Error)
+	}
+}
+
+func invokeRenderRequest(t *testing.T, request RenderRequest) WASMResponse {
+	t.Helper()
+	encoded, err := json.Marshal(request)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+
+	call := wrapWASMCall(Render)
+	defer call.Release()
+	got := call.Invoke(string(encoded)).String()
+	var response WASMResponse
+	if err := json.Unmarshal([]byte(got), &response); err != nil {
+		t.Fatalf("invalid response %q: %v", got, err)
+	}
+	return response
+}
 
 func TestDeprecatedRawWASMCallsWarnOnceAndRemainCallable(t *testing.T) {
 	t.Run("getObjOrder", func(t *testing.T) {
