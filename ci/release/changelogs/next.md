@@ -18,15 +18,7 @@
   - Require Go API callers to choose an explicit rooted or trusted unrestricted
     policy for local imports and image assets. CLI and watch retain trusted
     local-file access. [#2901](https://github.com/d2lang/d2/pull/2901)
-- Remove the `d2plugin` package and executable layout-plugin protocol,
-  including executable discovery, plugin render post-processing, and the standalone
-  `d2plugin-dagre` command. The CLI supports the bundled `dagre`, `elk`,
-  and `tala` engines and their existing options. Use `d2 --layout=<name>` to select
-  an engine. Go integrations should use the packages under `d2layouts` and the
-  layout/router resolvers in `d2lib.CompileOptions`. The deprecated
-  `d2layouts/d2layoutfeatures` package is also removed. `d2cli.LayoutResolver`
-  and `d2cli.RouterResolver` now take only `(ctx, ms)`, without a plugin list.
-  Apply custom output transformations in the calling application after rendering.
+- Remove the legacy `d2plugin` system; Dagre, ELK, and TALA remain built in. [#2920](https://github.com/d2lang/d2/pull/2920)
 - watch: authenticate HTTP and WebSocket access with a fresh per-process
   capability, exchanged for a token-free browser session. [#2910](https://github.com/d2lang/d2/pull/2910)
 - exports:
