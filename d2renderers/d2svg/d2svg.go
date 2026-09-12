@@ -258,6 +258,11 @@ func RenderLegend(buf *bytes.Buffer, diagram *d2target.Diagram, diagramHash stri
 	if diagram.Legend == nil || (len(diagram.Legend.Shapes) == 0 && len(diagram.Legend.Connections) == 0) {
 		return nil
 	}
+	for _, targetShape := range diagram.Legend.Shapes {
+		if textmeasure.IsDangerousLink(targetShape.Link) {
+			return fmt.Errorf("legend shape %q uses an unsafe link URL scheme", targetShape.ID)
+		}
+	}
 
 	_, br := diagram.BoundingBox()
 
