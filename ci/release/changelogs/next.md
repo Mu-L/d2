@@ -47,6 +47,7 @@
   - Validate raw geometry, routes, arrows, fonts, and arithmetic before recursive
     rendering. [#2912](https://github.com/d2lang/d2/pull/2912)
   - Limit raw graphs to 1,024 levels and 4,096 boards. [#2912](https://github.com/d2lang/d2/pull/2912)
+  - Limit LaTeX labels to 4 KiB and 128 nested groups. [#2922](https://github.com/d2lang/d2/pull/2922)
 - links and paints:
   - Reject dangerous ordinary link schemes after decoding common obfuscation. [#2896](https://github.com/d2lang/d2/pull/2896)
   - Require gradient stop positions to be finite numbers or percentages. [#2905](https://github.com/d2lang/d2/pull/2905)
