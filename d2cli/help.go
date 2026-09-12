@@ -9,7 +9,6 @@ import (
 	"github.com/d2lang/util-go/xmain"
 
 	"github.com/d2lang/d2/d2themes/d2themescatalog"
-	"github.com/d2lang/d2/internal/d2layout"
 	"github.com/d2lang/d2/lib/version"
 )
 
@@ -64,8 +63,9 @@ func themesCmd(_ context.Context, ms *xmain.State) {
 
 func shortLayoutHelp(ctx context.Context, ms *xmain.State) error {
 	var layoutLines []string
-	for _, engine := range d2layout.List() {
-		layoutLines = append(layoutLines, fmt.Sprintf("%s (built-in) - %s", engine.Name, engine.ShortHelp))
+	for _, name := range builtinLayoutNames() {
+		shortHelp, _ := builtinLayoutHelp(name)
+		layoutLines = append(layoutLines, fmt.Sprintf("%s (built-in) - %s", name, shortHelp))
 	}
 	fmt.Fprintf(ms.Stdout, `Available layout engines:
 
@@ -86,21 +86,33 @@ See more docs at https://d2lang.com/tour/layouts
 }
 
 func longLayoutHelp(ctx context.Context, ms *xmain.State) error {
-	name := ms.Opts.Flags.Arg(1)
-	engine, err := d2layout.Find(name)
-	if err != nil {
+	name := strings.ToLower(ms.Opts.Flags.Arg(1))
+	if !isBuiltinLayout(name) {
 		return layoutNotFound(name)
 	}
-	fmt.Fprintf(ms.Stdout, "%s (built-in):\n\n%s\n", engine.Name, strings.TrimSuffix(engine.LongHelp, "\n"))
+	_, longHelp := builtinLayoutHelp(name)
+	fmt.Fprintf(ms.Stdout, "%s (built-in):\n\n%s", name, longHelp)
 	return nil
 }
 
-func layoutNotFound(name string) error {
-	var names []string
-	for _, engine := range d2layout.List() {
-		names = append(names, engine.Name)
+func builtinLayoutHelp(name string) (shortHelp, longHelp string) {
+	opts := xmain.NewOpts(nil, nil)
+	switch name {
+	case "dagre":
+		shortHelp, longHelp = dagreShortHelp, dagreLongHelp
+		registerDagreFlags(opts)
+	case "elk":
+		shortHelp, longHelp = elkShortHelp, elkLongHelp
+		registerELKFlags(opts)
+	case "tala":
+		shortHelp, longHelp = talaShortHelp, talaLongHelp
+		registerTALAFlags(opts)
 	}
+	return shortHelp, longHelp + "\nFlags:\n" + opts.Defaults() + "\n"
+}
+
+func layoutNotFound(name string) error {
 	return xmain.UsageErrorf(`D2_LAYOUT "%s" is not a supported built-in layout engine.
 The available options are: %s. For details on each option, run "d2 layout".
-External d2plugin executables are no longer supported.`, name, strings.Join(names, ", "))
+External d2plugin executables are no longer supported.`, name, strings.Join(builtinLayoutNames(), ", "))
 }

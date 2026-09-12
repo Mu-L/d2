@@ -22,7 +22,6 @@ import (
 	"github.com/d2lang/util-go/xmain"
 
 	"github.com/d2lang/d2/d2ast"
-	"github.com/d2lang/d2/d2graph"
 	"github.com/d2lang/d2/d2lib"
 	"github.com/d2lang/d2/d2parser"
 	"github.com/d2lang/d2/d2renderers/d2animate"
@@ -34,7 +33,7 @@ import (
 	"github.com/d2lang/d2/d2target"
 	"github.com/d2lang/d2/d2themes"
 	"github.com/d2lang/d2/d2themes/d2themescatalog"
-	"github.com/d2lang/d2/internal/d2layout"
+	"github.com/d2lang/d2/internal/d2layoutfeatures"
 	"github.com/d2lang/d2/lib/background"
 	"github.com/d2lang/d2/lib/imgbundler"
 	"github.com/d2lang/d2/lib/localfile"
@@ -418,38 +417,6 @@ func Run(ctx context.Context, ms *xmain.State) (err error) {
 	return nil
 }
 
-// LayoutResolver selects a built-in engine with configuration isolated to this resolver.
-// Custom Go layouts can be supplied directly to d2lib.CompileOptions.LayoutResolver.
-func LayoutResolver(ctx context.Context, ms *xmain.State) func(string) (d2graph.LayoutGraph, error) {
-	cached := make(map[string]d2graph.LayoutGraph)
-	return func(name string) (d2graph.LayoutGraph, error) {
-		name = strings.ToLower(name)
-		if layout, ok := cached[name]; ok {
-			return layout, nil
-		}
-		engine, err := d2layout.Find(name)
-		if err != nil {
-			return nil, layoutNotFound(name)
-		}
-		if err := engine.Configure(ms); err != nil {
-			return nil, err
-		}
-		cached[name] = engine.Layout
-		return engine.Layout, nil
-	}
-}
-
-// RouterResolver selects the built-in engine's optional edge router.
-func RouterResolver(ctx context.Context, ms *xmain.State) func(string) (d2graph.RouteEdges, error) {
-	return func(name string) (d2graph.RouteEdges, error) {
-		engine, err := d2layout.Find(name)
-		if err != nil {
-			return nil, layoutNotFound(name)
-		}
-		return engine.RouteEdges, nil
-	}
-}
-
 func compile(ctx context.Context, ms *xmain.State, fs fs.FS, layout *string, renderOpts d2svg.RenderOpts, fontFamily *d2fonts.FontFamily, monoFontFamily *d2fonts.FontFamily, animateInterval int64, inputPath, outputPath string, boardPath []string, noChildren, bundle, forceAppendix bool, ext exportExtension, asciiMode string, wantPreview bool) (_ []byte, written bool, _ error) {
 	// Use ELK layout for ascii outputs when layout is dagre or unspecified
 	if ext == TXT {
@@ -528,11 +495,6 @@ func compile(ctx context.Context, ms *xmain.State, fs fs.FS, layout *string, ren
 		diagram.Steps = nil
 	}
 
-	engine, err := d2layout.Find(*opts.Layout)
-	if err != nil {
-		return nil, false, layoutNotFound(*opts.Layout)
-	}
-
 	if animateInterval > 0 {
 		masterID, err := diagram.HashID(renderOpts.Salt)
 		if err != nil {
@@ -541,8 +503,11 @@ func compile(ctx context.Context, ms *xmain.State, fs fs.FS, layout *string, ren
 		renderOpts.MasterID = masterID
 	}
 
-	ms.Log.Debug.Printf("using layout engine %s (built-in)", engine.Name)
-	if err := engine.CheckFeatures(g); err != nil {
+	if !isBuiltinLayout(*opts.Layout) {
+		return nil, false, layoutNotFound(*opts.Layout)
+	}
+	ms.Log.Debug.Printf("using layout engine %s (built-in)", strings.ToLower(*opts.Layout))
+	if err := d2layoutfeatures.Check(*opts.Layout, g); err != nil {
 		return nil, false, err
 	}
 
@@ -1033,16 +998,6 @@ func renameExt(fp string, newExt string) string {
 func getFileName(path string) string {
 	ext := filepath.Ext(path)
 	return strings.TrimSuffix(filepath.Base(path), ext)
-}
-
-func populateLayoutOpts(ms *xmain.State) {
-	for _, engine := range d2layout.List() {
-		for _, flag := range engine.Flags {
-			flag.AddToOpts(ms.Opts)
-			// Engine-specific flags are documented by "d2 layout <name>".
-			ms.Opts.Flags.MarkHidden(flag.Name)
-		}
-	}
 }
 
 func loadFont(ms *xmain.State, path string) ([]byte, error) {

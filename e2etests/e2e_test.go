@@ -29,7 +29,7 @@ import (
 	"github.com/d2lang/d2/d2renderers/d2ascii/charset"
 	"github.com/d2lang/d2/d2renderers/d2svg"
 	"github.com/d2lang/d2/d2target"
-	"github.com/d2lang/d2/internal/d2layout"
+	"github.com/d2lang/d2/internal/d2layoutfeatures"
 	"github.com/d2lang/d2/internal/testlog"
 	"github.com/d2lang/d2/lib/log"
 	"github.com/d2lang/d2/lib/textmeasure"
@@ -127,8 +127,6 @@ func runASCIITxtarTest(t *testing.T, tc testCase) {
 
 	serde(t, tc, ruler)
 
-	engine, err := d2layout.Find("elk")
-	assert.Success(t, err)
 	layoutResolver := func(engine string) (d2graph.LayoutGraph, error) {
 		return d2elklayout.DefaultLayout, nil
 	}
@@ -152,7 +150,7 @@ func runASCIITxtarTest(t *testing.T, tc testCase) {
 	}
 	assert.Success(t, err)
 
-	err = engine.CheckFeatures(g)
+	err = d2layoutfeatures.Check("elk", g)
 	if tc.elkFeatureError != "" {
 		assert.Error(t, err)
 		assert.ErrorString(t, err, tc.elkFeatureError)
@@ -352,9 +350,6 @@ func run(t *testing.T, tc testCase) {
 			continue
 		}
 
-		engine, err := d2layout.Find(layoutName)
-		assert.Success(t, err)
-
 		compileOpts := &d2lib.CompileOptions{
 			Ruler:          ruler,
 			MeasuredTexts:  tc.mtexts,
@@ -384,7 +379,7 @@ func run(t *testing.T, tc testCase) {
 			assert.Success(t, err)
 		}
 
-		err = engine.CheckFeatures(g)
+		err = d2layoutfeatures.Check(layoutName, g)
 		switch layoutName {
 		case "dagre":
 			if tc.dagreFeatureError != "" {
