@@ -30,7 +30,6 @@ import (
 
 	"github.com/d2lang/util-go/xmain"
 
-	"github.com/d2lang/d2/d2plugin"
 	"github.com/d2lang/d2/d2renderers/d2fonts"
 	"github.com/d2lang/d2/d2renderers/d2svg"
 	"github.com/d2lang/d2/lib/localfile"
@@ -47,7 +46,6 @@ var staticFS embed.FS
 
 type watcherOpts struct {
 	layout          *string
-	plugins         []d2plugin.Plugin
 	renderOpts      d2svg.RenderOpts
 	animateInterval int64
 	host            string
@@ -455,7 +453,7 @@ func (w *watcher) compileLoop(ctx context.Context) error {
 		if w.boardPath != "" {
 			boardPath = strings.Split(w.boardPath, string(os.PathSeparator))
 		}
-		svg, _, err := compile(ctx, w.ms, w.plugins, &fs, w.layout, w.renderOpts, w.fontFamily, w.monoFontFamily, w.animateInterval, w.inputPath, w.outputPath, boardPath, false, w.bundle, w.forceAppendix, w.outputFormat, w.asciiMode, true)
+		svg, _, err := compile(ctx, w.ms, &fs, w.layout, w.renderOpts, w.fontFamily, w.monoFontFamily, w.animateInterval, w.inputPath, w.outputPath, boardPath, false, w.bundle, w.forceAppendix, w.outputFormat, w.asciiMode, true)
 		w.boardpathMu.Unlock()
 		errs := ""
 		if err != nil {

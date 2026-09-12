@@ -16,7 +16,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/d2lang/d2/d2plugin"
 	"github.com/d2lang/d2/d2renderers/d2fonts"
 	"github.com/d2lang/d2/d2renderers/d2raster"
 	"github.com/d2lang/d2/d2renderers/d2scene"
@@ -30,44 +29,11 @@ import (
 	"github.com/d2lang/d2/lib/xgif"
 )
 
-func validateRasterPostProcessor(ctx context.Context, plugin d2plugin.Plugin, sourceSVG []byte) error {
-	postProcessor, ok := plugin.(d2plugin.PostProcessor)
-	if !ok {
-		return nil
-	}
-	// A PostProcessor may mutate its argument and return the same slice. Give it
-	// an owned input so the pristine source remains a trustworthy comparison.
-	processed, err := postProcessor.PostProcess(ctx, bytes.Clone(sourceSVG))
-	if err != nil {
-		return fmt.Errorf("raster postprocessor validation: %w", err)
-	}
-	if !bytes.Equal(sourceSVG, processed) {
-		return fmt.Errorf("raster export cannot apply SVG changes made by the layout plugin postprocessor; disable the postprocessor for PNG, GIF, PDF, and PPTX output")
-	}
-	return nil
-}
-
-func renderRasterSVG(ctx context.Context, plugin d2plugin.Plugin, diagram *d2target.Diagram, opts d2svg.RenderOpts, returnSVG, checkPostProcessor bool) ([]byte, error) {
-	_, checksPostProcessor := plugin.(d2plugin.PostProcessor)
-	if !returnSVG && (!checkPostProcessor || !checksPostProcessor) {
+func renderRasterSVG(diagram *d2target.Diagram, opts d2svg.RenderOpts, returnSVG bool) ([]byte, error) {
+	if !returnSVG {
 		return nil, nil
 	}
-	sourceSVG, err := d2svg.Render(diagram, &opts)
-	if err != nil {
-		return nil, err
-	}
-	if checkPostProcessor && checksPostProcessor {
-		if err := validateRasterPostProcessor(ctx, plugin, sourceSVG); err != nil {
-			if returnSVG {
-				return sourceSVG, err
-			}
-			return nil, err
-		}
-	}
-	if returnSVG {
-		return sourceSVG, nil
-	}
-	return nil, nil
+	return d2svg.Render(diagram, &opts)
 }
 
 const (
@@ -488,7 +454,7 @@ func renderGIFBoardFrames(
 	return nil
 }
 
-func renderGIF(ctx context.Context, plugin d2plugin.Plugin, inputPath string, cacheImages bool, diagram *d2target.Diagram, opts d2svg.RenderOpts, intervalMs int, wantPreview bool) (encoded, previewSVG []byte, err error) {
+func renderGIF(ctx context.Context, inputPath string, cacheImages bool, diagram *d2target.Diagram, opts d2svg.RenderOpts, intervalMs int, wantPreview bool) (encoded, previewSVG []byte, err error) {
 	session, err := newGIFRenderSession()
 	if err != nil {
 		return nil, nil, err
@@ -500,7 +466,7 @@ func renderGIF(ctx context.Context, plugin d2plugin.Plugin, inputPath string, ca
 	var incrementalEncoder *xgif.OpaquePalettedAnimationEncoder
 	var incrementalBounds image.Rectangle
 	summary, err := renderGIFWithSession(
-		ctx, plugin, inputPath, cacheImages, diagram, opts, intervalMs, session, &workspace, wantPreview,
+		ctx, inputPath, cacheImages, diagram, opts, intervalMs, session, &workspace, wantPreview,
 		func(totalBoards, totalFrames int, bounds image.Rectangle) error {
 			if totalBoards != 1 {
 				return nil
@@ -588,7 +554,6 @@ type gifRenderSummary struct {
 
 func renderGIFWithSession(
 	ctx context.Context,
-	plugin d2plugin.Plugin,
 	inputPath string,
 	cacheImages bool,
 	diagram *d2target.Diagram,
@@ -646,7 +611,7 @@ func renderGIFWithSession(
 		}
 		boardOpts := rasterRenderOptions(opts)
 		needsPreview := wantPreview && board == diagram && !diagram.IsFolderOnly
-		sourceSVG, err := renderRasterSVG(ctx, plugin, board, boardOpts, needsPreview, true)
+		sourceSVG, err := renderRasterSVG(board, boardOpts, needsPreview)
 		if err != nil {
 			return summary, fmt.Errorf("GIF board %d: %w", boardIndex, err)
 		}

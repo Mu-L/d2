@@ -47,7 +47,7 @@ func TestLayoutCmdRejectsExtraArguments(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err := layoutCmd(context.Background(), &xmain.State{Opts: opts}, nil)
+	err := layoutCmd(context.Background(), &xmain.State{Opts: opts})
 	var usageErr xmain.UsageError
 	if !errors.As(err, &usageErr) {
 		t.Fatalf("layoutCmd() error = %v, want xmain.UsageError", err)

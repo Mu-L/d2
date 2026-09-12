@@ -7,7 +7,6 @@ import (
 	"io"
 	"math"
 
-	"github.com/d2lang/d2/d2plugin"
 	"github.com/d2lang/d2/d2renderers/d2raster"
 	"github.com/d2lang/d2/d2renderers/d2scene"
 	"github.com/d2lang/d2/d2renderers/d2scenebuild"
@@ -32,7 +31,6 @@ const (
 
 type pagedRenderer struct {
 	ctx              context.Context
-	plugin           d2plugin.Plugin
 	opts             d2svg.RenderOpts
 	assets           *d2scenebuild.AssetOptions
 	fonts            *d2scenebuild.FontFallbackOptions
@@ -66,7 +64,7 @@ type pagedBoard struct {
 	preview []byte
 }
 
-func newPagedRenderer(ctx context.Context, plugin d2plugin.Plugin, inputPath string, cacheImages bool, diagram *d2target.Diagram, opts d2svg.RenderOpts) (*pagedRenderer, error) {
+func newPagedRenderer(ctx context.Context, inputPath string, cacheImages bool, diagram *d2target.Diagram, opts d2svg.RenderOpts) (*pagedRenderer, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -99,7 +97,6 @@ func newPagedRenderer(ctx context.Context, plugin d2plugin.Plugin, inputPath str
 	}
 	return &pagedRenderer{
 		ctx:              ctx,
-		plugin:           plugin,
 		opts:             opts,
 		assets:           assets,
 		fonts:            fonts,
@@ -132,7 +129,7 @@ func (r *pagedRenderer) render(diagram *d2target.Diagram, wantsPreview bool) (*p
 	board.Steps = nil
 	board.Root.Fill = "transparent"
 	renderOpts := rasterRenderOptions(r.opts)
-	preview, err := renderRasterSVG(r.ctx, r.plugin, &board, renderOpts, wantsPreview, true)
+	preview, err := renderRasterSVG(&board, renderOpts, wantsPreview)
 	if err != nil {
 		return nil, fmt.Errorf("paged board %d: %w", r.renderedBoards, err)
 	}
@@ -395,21 +392,21 @@ func indexPagedBoards(ctx context.Context, root *d2target.Diagram) (map[string]i
 	return boardIDToPage, boards, nil
 }
 
-func renderPDFWithStatus(ctx context.Context, plugin d2plugin.Plugin, opts d2svg.RenderOpts, inputPath, outputPath string, cacheImages bool, ruler *textmeasure.Ruler, diagram *d2target.Diagram, rootPath []pdf.BoardTitle, includeNav, wantPreview bool) ([]byte, bool, error) {
-	return renderPDFWithExporter(ctx, plugin, opts, inputPath, cacheImages, ruler, diagram, rootPath, includeNav, wantPreview, func(document *pdf.GoFPDF) (bool, error) {
+func renderPDFWithStatus(ctx context.Context, opts d2svg.RenderOpts, inputPath, outputPath string, cacheImages bool, ruler *textmeasure.Ruler, diagram *d2target.Diagram, rootPath []pdf.BoardTitle, includeNav, wantPreview bool) ([]byte, bool, error) {
+	return renderPDFWithExporter(ctx, opts, inputPath, cacheImages, ruler, diagram, rootPath, includeNav, wantPreview, func(document *pdf.GoFPDF) (bool, error) {
 		return document.ExportWithStatus(outputPath)
 	})
 }
 
-func renderPDFTo(ctx context.Context, plugin d2plugin.Plugin, opts d2svg.RenderOpts, inputPath string, output io.Writer, cacheImages bool, ruler *textmeasure.Ruler, diagram *d2target.Diagram, rootPath []pdf.BoardTitle, includeNav, wantPreview bool) ([]byte, error) {
-	preview, _, err := renderPDFWithExporter(ctx, plugin, opts, inputPath, cacheImages, ruler, diagram, rootPath, includeNav, wantPreview, func(document *pdf.GoFPDF) (bool, error) {
+func renderPDFTo(ctx context.Context, opts d2svg.RenderOpts, inputPath string, output io.Writer, cacheImages bool, ruler *textmeasure.Ruler, diagram *d2target.Diagram, rootPath []pdf.BoardTitle, includeNav, wantPreview bool) ([]byte, error) {
+	preview, _, err := renderPDFWithExporter(ctx, opts, inputPath, cacheImages, ruler, diagram, rootPath, includeNav, wantPreview, func(document *pdf.GoFPDF) (bool, error) {
 		return false, document.ExportTo(output)
 	})
 	return preview, err
 }
 
-func renderPDFWithExporter(ctx context.Context, plugin d2plugin.Plugin, opts d2svg.RenderOpts, inputPath string, cacheImages bool, ruler *textmeasure.Ruler, diagram *d2target.Diagram, rootPath []pdf.BoardTitle, includeNav, wantPreview bool, export func(*pdf.GoFPDF) (bool, error)) ([]byte, bool, error) {
-	renderer, err := newPagedRenderer(ctx, plugin, inputPath, cacheImages, diagram, opts)
+func renderPDFWithExporter(ctx context.Context, opts d2svg.RenderOpts, inputPath string, cacheImages bool, ruler *textmeasure.Ruler, diagram *d2target.Diagram, rootPath []pdf.BoardTitle, includeNav, wantPreview bool, export func(*pdf.GoFPDF) (bool, error)) ([]byte, bool, error) {
+	renderer, err := newPagedRenderer(ctx, inputPath, cacheImages, diagram, opts)
 	if err != nil {
 		return nil, false, err
 	}
@@ -479,11 +476,11 @@ func renderPDFWithExporter(ctx context.Context, plugin d2plugin.Plugin, opts d2s
 	return preview, touched, err
 }
 
-func renderPPTX(ctx context.Context, presentation *pptx.Presentation, plugin d2plugin.Plugin, opts d2svg.RenderOpts, inputPath string, cacheImages bool, ruler *textmeasure.Ruler, diagram *d2target.Diagram, rootPath []pptx.BoardTitle, wantPreview bool) ([]byte, error) {
+func renderPPTX(ctx context.Context, presentation *pptx.Presentation, opts d2svg.RenderOpts, inputPath string, cacheImages bool, ruler *textmeasure.Ruler, diagram *d2target.Diagram, rootPath []pptx.BoardTitle, wantPreview bool) ([]byte, error) {
 	if presentation == nil {
 		return nil, fmt.Errorf("PPTX export requires a presentation")
 	}
-	renderer, err := newPagedRenderer(ctx, plugin, inputPath, cacheImages, diagram, opts)
+	renderer, err := newPagedRenderer(ctx, inputPath, cacheImages, diagram, opts)
 	if err != nil {
 		return nil, err
 	}

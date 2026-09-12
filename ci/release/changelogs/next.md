@@ -2,6 +2,15 @@
 
 #### Improvements 🧹
 
+- Remove the `d2plugin` package and executable layout-plugin protocol,
+  including executable discovery, plugin render post-processing, and the standalone
+  `d2plugin-dagre` command. The CLI supports the bundled `dagre`, `elk`,
+  and `tala` engines and their existing options. Use `d2 --layout=<name>` to select
+  an engine. Go integrations should use the packages under `d2layouts` and the
+  layout/router resolvers in `d2lib.CompileOptions`. The deprecated
+  `d2layouts/d2layoutfeatures` package is also removed. `d2cli.LayoutResolver`
+  and `d2cli.RouterResolver` now take only `(ctx, ms)`, without a plugin list.
+  Apply custom output transformations in the calling application after rendering.
 - Centralize escaped SVG attribute and text serialization, encode unsafe local
   IDs, and keep deprecated raw element fields only as checked compatibility boundaries.
 - SVG image bundling now uses the same document-scoped resolver as raster
