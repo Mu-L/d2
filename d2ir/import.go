@@ -14,6 +14,10 @@ import (
 // caller did not provide CompileOptions.FS.
 var ErrImportsDisabled = errors.New("d2ir: imports are disabled; provide CompileOptions.FS to enable them")
 
+// MaxImportDepth is the maximum number of imported files permitted in one
+// active import chain. The root source file is not counted.
+const MaxImportDepth = 128
+
 func (c *compiler) pushImportStack(imp *d2ast.Import) (string, bool) {
 	impPath := imp.PathWithPre()
 	if impPath == "" && imp.Range != (d2ast.Range{}) {
@@ -28,6 +32,11 @@ func (c *compiler) pushImportStack(imp *d2ast.Import) (string, bool) {
 		if !filepath.IsAbs(impPath) {
 			impPath = path.Join(path.Dir(c.importStack[len(c.importStack)-1]), impPath)
 		}
+	}
+
+	if len(c.importStack) > 0 && len(c.importStack)-1 >= MaxImportDepth {
+		c.errorf(imp, "maximum import depth of %d exceeded", MaxImportDepth)
+		return "", false
 	}
 
 	for i, p := range c.importStack {
