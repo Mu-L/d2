@@ -15,7 +15,6 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 
 	"github.com/andybalholm/brotli"
@@ -64,7 +63,7 @@ func TestRegex(t *testing.T) {
 }
 
 func TestInlineRemote(t *testing.T) {
-	imgCache = sync.Map{}
+	imgCache = newImageCache(maxImageCacheEntries, maxImageCacheBytes)
 	ctx := log.With(context.Background(), testlog.New(t))
 	svgURL := "https://icons.terrastruct.com/essentials/004-picture.svg"
 	pngURL := "https://cdn4.iconfinder.com/data/icons/smart-phones-technologies/512/android-phone.png"
@@ -125,7 +124,7 @@ width="328" height="587" viewBox="-100 -131 328 587"><style type="text/css">
 		t.Fatal("no png image inserted")
 	}
 
-	imgCache = sync.Map{}
+	imgCache = newImageCache(maxImageCacheEntries, maxImageCacheBytes)
 	// Test almost too large response
 	httpClient.Transport = roundTripFunc(func(req *http.Request) *http.Response {
 		respRecorder := httptest.NewRecorder()
@@ -140,7 +139,7 @@ width="328" height="587" viewBox="-100 -131 328 587"><style type="text/css">
 		t.Fatal(err)
 	}
 
-	imgCache = sync.Map{}
+	imgCache = newImageCache(maxImageCacheEntries, maxImageCacheBytes)
 	// Test too large response
 	httpClient.Transport = roundTripFunc(func(req *http.Request) *http.Response {
 		respRecorder := httptest.NewRecorder()
@@ -155,7 +154,7 @@ width="328" height="587" viewBox="-100 -131 328 587"><style type="text/css">
 		t.Fatal("expected error")
 	}
 
-	imgCache = sync.Map{}
+	imgCache = newImageCache(maxImageCacheEntries, maxImageCacheBytes)
 	// Test error response
 	httpClient.Transport = roundTripFunc(func(req *http.Request) *http.Response {
 		respRecorder := httptest.NewRecorder()
@@ -169,7 +168,7 @@ width="328" height="587" viewBox="-100 -131 328 587"><style type="text/css">
 }
 
 func TestInlineLocal(t *testing.T) {
-	imgCache = sync.Map{}
+	imgCache = newImageCache(maxImageCacheEntries, maxImageCacheBytes)
 	ctx := log.With(context.Background(), testlog.New(t))
 	svgURL, err := filepath.Abs("./test_svg.svg")
 	if err != nil {
@@ -268,7 +267,7 @@ width="328" height="587" viewBox="-100 -131 328 587"><style type="text/css">
 
 // TestDuplicateURL ensures that we don't fetch the same image twice
 func TestDuplicateURL(t *testing.T) {
-	imgCache = sync.Map{}
+	imgCache = newImageCache(maxImageCacheEntries, maxImageCacheBytes)
 	ctx := log.With(context.Background(), testlog.New(t))
 	url1 := "https://icons.terrastruct.com/essentials/004-picture.svg"
 	url2 := "https://icons.terrastruct.com/essentials/004-picture.svg"
@@ -323,7 +322,7 @@ width="328" height="587" viewBox="-100 -131 328 587"><style type="text/css">
 }
 
 func TestInlineRemoteCompressedSVG(t *testing.T) {
-	imgCache = sync.Map{}
+	imgCache = newImageCache(maxImageCacheEntries, maxImageCacheBytes)
 	ctx := log.With(context.Background(), testlog.New(t))
 	svgURL := "https://icons.terrastruct.com/essentials/004-picture.svg"
 	rawSVG := []byte(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><rect width="10" height="10"/></svg>`)
@@ -449,9 +448,15 @@ func TestInlineRemoteContentTypeIsSafeAndCanonical(t *testing.T) {
 			body:        testPNGFile,
 			wantType:    "image/png",
 		},
+		{
+			name:        "XML-sensitive subtype",
+			contentType: "image/x&y",
+			body:        testPNGFile,
+			wantType:    "image/x&y",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			imgCache = sync.Map{}
+			imgCache = newImageCache(maxImageCacheEntries, maxImageCacheBytes)
 			httpClient.Transport = roundTripFunc(func(req *http.Request) *http.Response {
 				if req.URL.String() != imageURL {
 					t.Fatalf("unexpected URL %s", req.URL)
@@ -506,7 +511,7 @@ func assertBundledImageHref(t *testing.T, source []byte, wantHref string) {
 }
 
 func TestImgCache(t *testing.T) {
-	imgCache = sync.Map{}
+	imgCache = newImageCache(maxImageCacheEntries, maxImageCacheBytes)
 	ctx := log.With(context.Background(), testlog.New(t))
 	url1 := "https://icons.terrastruct.com/essentials/004-picture.svg"
 	url2 := "https://icons.terrastruct.com/essentials/004-picture.svg"

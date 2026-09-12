@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -62,7 +61,7 @@ func TestBundleRemoteNetworkPolicy(t *testing.T) {
 	})
 
 	t.Run("cache is separated by policy", func(t *testing.T) {
-		imgCache = sync.Map{}
+		imgCache = newImageCache(maxImageCacheEntries, maxImageCacheBytes)
 		mappedClient := httpClient
 		httpClient = server.Client()
 		before := privateHits.Load()
