@@ -23,6 +23,9 @@ import (
 
 type CompileOptions struct {
 	UTF16Pos bool
+	// MaxVariableExpansion bounds work added by variable substitutions and the
+	// automatic copies they induce. Zero uses the secure compiler default.
+	MaxVariableExpansion int64
 	// FS is the file system used for resolving imports in the D2 text. Nil
 	// disables imports. Callers that accept untrusted input should prefer a
 	// filesystem constrained to the intended import root; lib/localfile provides
@@ -79,9 +82,10 @@ func compileInput(ctx context.Context, input string, compileOpts *CompileOptions
 	}
 
 	g, config, err := d2compiler.Compile(compileOpts.InputPath, strings.NewReader(input), &d2compiler.CompileOptions{
-		Context:  ctx,
-		UTF16Pos: compileOpts.UTF16Pos,
-		FS:       compileOpts.FS,
+		Context:              ctx,
+		UTF16Pos:             compileOpts.UTF16Pos,
+		MaxVariableExpansion: compileOpts.MaxVariableExpansion,
+		FS:                   compileOpts.FS,
 	})
 	if err != nil {
 		return nil, nil, err

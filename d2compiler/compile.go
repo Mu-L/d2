@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/d2lang/util-go/go2"
 
@@ -26,10 +27,13 @@ import (
 )
 
 type CompileOptions struct {
-	// Context stops parsing when canceled. A nil Context is treated as
+	// Context stops parsing and compilation when canceled. A nil Context is treated as
 	// context.Background().
 	Context  context.Context
 	UTF16Pos bool
+	// MaxVariableExpansion bounds work added by variable substitutions and the
+	// automatic copies they induce. Zero uses d2ir.DefaultMaxVariableExpansion.
+	MaxVariableExpansion int64
 	// FS is the file system used for resolving imports in the D2 text. Nil
 	// disables imports. Callers that accept untrusted input should prefer a
 	// filesystem constrained to the intended import root; lib/localfile provides
@@ -50,41 +54,74 @@ func Compile(p string, r io.Reader, opts *CompileOptions) (*d2graph.Graph, *d2ta
 	}
 
 	ir, _, err := d2ir.Compile(ast, &d2ir.CompileOptions{
-		Context:  opts.Context,
-		UTF16Pos: opts.UTF16Pos,
-		FS:       opts.FS,
+		Context:              opts.Context,
+		UTF16Pos:             opts.UTF16Pos,
+		MaxVariableExpansion: opts.MaxVariableExpansion,
+		FS:                   opts.FS,
 	})
 	if err != nil {
 		return nil, nil, err
 	}
 
-	g, err := compileIR(ast, ir)
+	g, err := compileIRContext(opts.Context, ast, ir)
 	if err != nil {
 		return nil, nil, err
+	}
+	if opts.Context != nil {
+		if err := opts.Context.Err(); err != nil {
+			return nil, nil, err
+		}
 	}
 	g.FS = opts.FS
 	g.SortObjectsByAST()
 	g.SortEdgesByAST()
+	if opts.Context != nil {
+		if err := opts.Context.Err(); err != nil {
+			return nil, nil, err
+		}
+	}
 	config, err := compileConfig(ir)
 	if err != nil {
 		return nil, nil, err
+	}
+	if opts.Context != nil {
+		if err := opts.Context.Err(); err != nil {
+			return nil, nil, err
+		}
 	}
 	return g, config, nil
 }
 
 func compileIR(ast *d2ast.Map, m *d2ir.Map) (*d2graph.Graph, error) {
+	return compileIRContext(context.Background(), ast, m)
+}
+
+func compileIRContext(ctx context.Context, ast *d2ast.Map, m *d2ir.Map) (*d2graph.Graph, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	c := &compiler{
 		err: &d2parser.ParseError{},
+		ctx: ctx,
 	}
 
 	g := d2graph.NewGraph()
 	g.AST = ast
 	g.BaseAST = ast
 	c.compileBoard(g, m)
+	if c.stopped() {
+		return nil, c.fatalErr
+	}
 	if len(c.err.Errors) > 0 {
 		return nil, c.err
 	}
 	c.validateBoardLinks(g)
+	if c.stopped() {
+		return nil, c.fatalErr
+	}
 	if len(c.err.Errors) > 0 {
 		return nil, c.err
 	}
@@ -92,28 +129,66 @@ func compileIR(ast *d2ast.Map, m *d2ir.Map) (*d2graph.Graph, error) {
 }
 
 func (c *compiler) compileBoard(g *d2graph.Graph, ir *d2ir.Map) *d2graph.Graph {
+	if c.stopped() {
+		return g
+	}
 	// Graph compilation reads the IR. Nested boards still need an independent
 	// root for class lookup, and boards with children need a copy because the
 	// folder comparison below uses CopyBase, which also modifies its source.
 	if !ir.Root() || hasBoardFields(ir) {
+		if err := d2ir.ReserveVariableExpansionCopy(c.ctx, ir); err != nil {
+			c.fatalErr = err
+			return g
+		}
 		ir = ir.Copy(nil).(*d2ir.Map)
 	}
 	c.compileMap(g.Root, ir)
+	if c.stopped() {
+		return g
+	}
 	c.setDefaultShapes(g)
+	if c.stopped() {
+		return g
+	}
 	if len(c.err.Errors) == 0 {
 		c.validateKeys(g.Root, ir)
 	}
+	if c.stopped() {
+		return g
+	}
 	c.validateLabels(g)
+	if c.stopped() {
+		return g
+	}
 	c.validateNear(g)
+	if c.stopped() {
+		return g
+	}
 	c.validateEdges(g)
+	if c.stopped() {
+		return g
+	}
 	c.validatePositionsCompatibility(g)
+	if c.stopped() {
+		return g
+	}
 
 	c.compileLegend(g, ir)
+	if c.stopped() {
+		return g
+	}
 
 	c.compileBoardsField(g, ir, "layers")
 	c.compileBoardsField(g, ir, "scenarios")
 	c.compileBoardsField(g, ir, "steps")
+	if c.stopped() {
+		return g
+	}
 	if len(g.Layers) > 0 || len(g.Scenarios) > 0 || len(g.Steps) > 0 {
+		if err := d2ir.ReserveVariableExpansionCopy(c.ctx, ir); err != nil {
+			c.fatalErr = err
+			return g
+		}
 		if d2ir.ParentMap(ir).CopyBase(nil).Equal(ir.CopyBase(nil)) {
 			g.IsFolderOnly = true
 		}
@@ -133,6 +208,9 @@ func hasBoardFields(ir *d2ir.Map) bool {
 }
 
 func (c *compiler) compileLegend(g *d2graph.Graph, m *d2ir.Map) {
+	if c.stopped() {
+		return
+	}
 	varsField := m.GetField(d2ast.FlatUnquotedString("vars"))
 	if varsField == nil || varsField.Map() == nil {
 		return
@@ -146,10 +224,16 @@ func (c *compiler) compileLegend(g *d2graph.Graph, m *d2ir.Map) {
 	legendGraph := d2graph.NewGraph()
 
 	c.compileMap(legendGraph.Root, legendField.Map())
+	if c.stopped() {
+		return
+	}
 	c.setDefaultShapes(legendGraph)
 
 	objects := make([]*d2graph.Object, 0)
 	for _, obj := range legendGraph.Objects {
+		if c.stopped() {
+			return
+		}
 		if obj.Style.Opacity != nil {
 			if opacity, err := strconv.ParseFloat(obj.Style.Opacity.Value, 64); err == nil && opacity == 0 {
 				continue
@@ -163,6 +247,9 @@ func (c *compiler) compileLegend(g *d2graph.Graph, m *d2ir.Map) {
 	}
 
 	for _, edge := range legendGraph.Edges {
+		if c.stopped() {
+			return
+		}
 		edge.Route = []*geo.Point{
 			{X: 10, Y: 10},
 			{X: 110, Y: 10},
@@ -184,11 +271,17 @@ func (c *compiler) compileLegend(g *d2graph.Graph, m *d2ir.Map) {
 }
 
 func (c *compiler) compileBoardsField(g *d2graph.Graph, ir *d2ir.Map, fieldName string) {
+	if c.stopped() {
+		return
+	}
 	boards := ir.GetField(d2ast.FlatUnquotedString(fieldName))
 	if boards.Map() == nil {
 		return
 	}
 	for _, f := range boards.Map().Fields {
+		if c.stopped() {
+			return
+		}
 		m := f.Map()
 		if f.Map() == nil {
 			m = &d2ir.Map{}
@@ -204,6 +297,9 @@ func (c *compiler) compileBoardsField(g *d2graph.Graph, ir *d2ir.Map, fieldName 
 			g2.BaseAST = findFieldAST(g.BaseAST, f)
 		}
 		c.compileBoard(g2, m)
+		if c.stopped() {
+			return
+		}
 		if f.Primary() != nil {
 			c.compileLabel(&g2.Root.Attributes, f)
 		}
@@ -278,6 +374,23 @@ func _findFieldAST(ast *d2ast.Map, path []string) *d2ast.Map {
 type compiler struct {
 	err             *d2parser.ParseError
 	activeClassMaps map[*d2ir.Map]struct{}
+	classMapsByRoot map[*d2ir.Map]map[string]*d2ir.Map
+	ctx             context.Context
+	fatalErr        error
+}
+
+func (c *compiler) stopped() bool {
+	if c.fatalErr != nil {
+		return true
+	}
+	if c.ctx == nil {
+		c.ctx = context.Background()
+	}
+	if err := c.ctx.Err(); err != nil {
+		c.fatalErr = err
+		return true
+	}
+	return false
 }
 
 func (c *compiler) errorf(n d2ast.Node, f string, v ...interface{}) {
@@ -292,6 +405,9 @@ func (c *compiler) errorf(n d2ast.Node, f string, v ...interface{}) {
 }
 
 func (c *compiler) compileMap(obj *d2graph.Object, m *d2ir.Map) {
+	if c.stopped() {
+		return
+	}
 	class := m.GetField(d2ast.FlatUnquotedString("class"))
 	if class != nil {
 		var classNames []string
@@ -300,6 +416,9 @@ func (c *compiler) compileMap(obj *d2graph.Object, m *d2ir.Map) {
 		} else if class.Composite != nil {
 			if arr, ok := class.Composite.(*d2ir.Array); ok {
 				for _, class := range arr.Values {
+					if c.stopped() {
+						return
+					}
 					if scalar, ok := class.(*d2ir.Scalar); ok {
 						classNames = append(classNames, scalar.Value.ScalarString())
 					} else {
@@ -310,9 +429,17 @@ func (c *compiler) compileMap(obj *d2graph.Object, m *d2ir.Map) {
 		}
 
 		for _, className := range classNames {
-			classMap := m.GetClassMap(className)
+			if c.stopped() {
+				return
+			}
+			classMap := c.getClassMap(m, className)
 			if classMap != nil {
 				if c.beginClass(class, className, classMap) {
+					if err := d2ir.ReserveVariableExpansionCopy(c.ctx, classMap); err != nil {
+						c.fatalErr = err
+						c.endClass(classMap)
+						return
+					}
 					c.compileMap(obj, classMap)
 					c.endClass(classMap)
 				}
@@ -321,8 +448,11 @@ func (c *compiler) compileMap(obj *d2graph.Object, m *d2ir.Map) {
 					split := strings.Split(className, ",")
 					allFound := true
 					for _, maybeClassName := range split {
+						if c.stopped() {
+							return
+						}
 						maybeClassName = strings.TrimSpace(maybeClassName)
-						if m.GetClassMap(maybeClassName) == nil {
+						if c.getClassMap(m, maybeClassName) == nil {
 							allFound = false
 							break
 						}
@@ -343,6 +473,9 @@ func (c *compiler) compileMap(obj *d2graph.Object, m *d2ir.Map) {
 		}
 	}
 	for _, f := range m.Fields {
+		if c.stopped() {
+			return
+		}
 		if f.Name.ScalarString() == "shape" && f.Name.IsUnquoted() {
 			continue
 		}
@@ -359,8 +492,14 @@ func (c *compiler) compileMap(obj *d2graph.Object, m *d2ir.Map) {
 		case d2target.ShapeSQLTable:
 			c.compileSQLTable(obj)
 		}
+		if c.stopped() {
+			return
+		}
 
 		for _, e := range m.Edges {
+			if c.stopped() {
+				return
+			}
 			c.compileEdge(obj, e)
 		}
 	}
@@ -382,7 +521,91 @@ func (c *compiler) endClass(classMap *d2ir.Map) {
 	delete(c.activeClassMaps, classMap)
 }
 
+func (c *compiler) getClassMap(m *d2ir.Map, name string) *d2ir.Map {
+	root := d2ir.RootMap(m)
+	if c.classMapsByRoot == nil {
+		c.classMapsByRoot = make(map[*d2ir.Map]map[string]*d2ir.Map)
+	}
+	classMaps, ok := c.classMapsByRoot[root]
+	if !ok {
+		classMaps = make(map[string]*d2ir.Map)
+		classes := root.GetField(d2ast.FlatUnquotedString("classes"))
+		if classes != nil && classes.Map() != nil {
+			for _, class := range classes.Map().Fields {
+				if c.stopped() {
+					return nil
+				}
+				if class == nil || class.Name == nil {
+					continue
+				}
+				className := class.Name.ScalarString()
+				if _, reserved := d2ast.ReservedKeywords[strings.ToLower(className)]; reserved && !class.Name.IsUnquoted() {
+					// GetClassMap queries with an unquoted name, so quoted
+					// reserved words do not match it.
+					continue
+				}
+				key := foldClassName(className)
+				if _, exists := classMaps[key]; exists {
+					continue
+				}
+				// Retain nil values: like GetField, the first matching
+				// declaration wins even when it is not a map.
+				classMaps[key] = class.Map()
+			}
+		}
+		if c.stopped() {
+			return nil
+		}
+		c.classMapsByRoot[root] = classMaps
+	}
+	return classMaps[foldClassName(name)]
+}
+
+// foldClassName produces the same Unicode simple-fold equivalence classes as
+// strings.EqualFold, which is what d2ir.GetClassMap historically used.
+func foldClassName(s string) string {
+	ascii := true
+	lower := false
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 0x80 {
+			ascii = false
+			break
+		}
+		if s[i] >= 'a' && s[i] <= 'z' {
+			lower = true
+		}
+	}
+	if ascii {
+		if !lower {
+			return s
+		}
+		folded := []byte(s)
+		for i := range folded {
+			if folded[i] >= 'a' && folded[i] <= 'z' {
+				folded[i] -= 'a' - 'A'
+			}
+		}
+		return string(folded)
+	}
+
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		min := r
+		for next := unicode.SimpleFold(r); next != r; next = unicode.SimpleFold(next) {
+			if next < min {
+				min = next
+			}
+		}
+		b.WriteRune(min)
+	}
+	return b.String()
+}
+
 func (c *compiler) compileField(obj *d2graph.Object, f *d2ir.Field) {
+	if c.stopped() {
+		return
+	}
 	keyword := strings.ToLower(f.Name.ScalarString())
 	_, isStyleReserved := d2ast.StyleKeywords[keyword]
 	if isStyleReserved && f.Name.IsUnquoted() {
@@ -397,10 +620,16 @@ func (c *compiler) compileField(obj *d2graph.Object, f *d2ir.Field) {
 				c.errorf(f.Map().Edges[0].LastRef().AST(), "classes cannot contain an edge")
 			}
 			for _, classesField := range f.Map().Fields {
+				if c.stopped() {
+					return
+				}
 				if classesField.Map() == nil {
 					continue
 				}
 				for _, cf := range classesField.Map().Fields {
+					if c.stopped() {
+						return
+					}
 					if _, ok := d2ast.ReservedKeywords[cf.Name.ScalarString()]; !(ok && f.Name.IsUnquoted()) {
 						c.errorf(cf.LastRef().AST(), "%s is an invalid class field, must be reserved keyword", cf.Name.ScalarString())
 					}
@@ -447,12 +676,18 @@ func (c *compiler) compileField(obj *d2graph.Object, f *d2ir.Field) {
 	}
 	if f.Map() != nil {
 		c.compileMap(obj, f.Map())
+		if c.stopped() {
+			return
+		}
 	}
 
 	if obj.Label.MapKey == nil {
 		obj.Label.MapKey = f.LastPrimaryKey()
 	}
 	for _, fr := range f.References {
+		if c.stopped() {
+			return
+		}
 		if fr.Primary() {
 			if fr.Context_.Key.Value.Map != nil {
 				obj.Map = fr.Context_.Key.Value.Map
@@ -515,9 +750,15 @@ func (c *compiler) compileLabel(attrs *d2graph.Attributes, f d2ir.Node) {
 }
 
 func (c *compiler) compilePosition(attrs *d2graph.Attributes, f *d2ir.Field) {
+	if c.stopped() {
+		return
+	}
 	name := f.Name
 	if f.Map() != nil {
 		for _, f := range f.Map().Fields {
+			if c.stopped() {
+				return
+			}
 			if f.Name.ScalarString() == "near" && f.Name.IsUnquoted() {
 				if f.Primary() == nil {
 					c.errorf(f.LastPrimaryKey(), `invalid "near" field`)
@@ -580,6 +821,9 @@ func (c *compiler) compileReserved(attrs *d2graph.Attributes, f *d2ir.Field) {
 			case "class":
 				if arr, ok := f.Composite.(*d2ir.Array); ok {
 					for _, class := range arr.Values {
+						if c.stopped() {
+							return
+						}
 						if scalar, ok := class.(*d2ir.Scalar); ok {
 							attrs.Classes = append(attrs.Classes, scalar.Value.ScalarString())
 						}
@@ -588,6 +832,9 @@ func (c *compiler) compileReserved(attrs *d2graph.Attributes, f *d2ir.Field) {
 			case "constraint":
 				if arr, ok := f.Composite.(*d2ir.Array); ok {
 					for _, constraint := range arr.Values {
+						if c.stopped() {
+							return
+						}
 						if scalar, ok := constraint.(*d2ir.Scalar); ok {
 							switch scalar.Value.(type) {
 							case *d2ast.Null:
@@ -637,6 +884,9 @@ func (c *compiler) compileReserved(attrs *d2graph.Attributes, f *d2ir.Field) {
 		c.compilePosition(attrs, f)
 		if f.Map() != nil {
 			for _, ff := range f.Map().Fields {
+				if c.stopped() {
+					return
+				}
 				if ff.Name.ScalarString() == "style" && ff.Name.IsUnquoted() {
 					if ff.Map() == nil || len(ff.Map().Fields) == 0 {
 						c.errorf(f.LastRef().AST(), `"style" expected to be set to a map of key-values, or contain an additional keyword like "style.opacity: 0.4"`)
@@ -830,6 +1080,9 @@ func (c *compiler) compileReserved(attrs *d2graph.Attributes, f *d2ir.Field) {
 
 func (c *compiler) compileStyle(styles *d2graph.Style, m *d2ir.Map) {
 	for _, f := range m.Fields {
+		if c.stopped() {
+			return
+		}
 		c.compileStyleField(styles, f)
 	}
 }
@@ -897,6 +1150,9 @@ func compileStyleFieldInit(styles *d2graph.Style, f *d2ir.Field) {
 }
 
 func (c *compiler) compileEdge(obj *d2graph.Object, e *d2ir.Edge) {
+	if c.stopped() {
+		return
+	}
 	edge, err := obj.Connect(e.ID.SrcPath, e.ID.DstPath, e.ID.SrcArrow, e.ID.DstArrow, "")
 	if err != nil {
 		c.errorf(e.References[0].AST(), err.Error())
@@ -915,6 +1171,9 @@ func (c *compiler) compileEdge(obj *d2graph.Object, e *d2ir.Edge) {
 
 	edge.Label.MapKey = e.LastPrimaryKey()
 	for _, er := range e.References {
+		if c.stopped() {
+			return
+		}
 		r := d2graph.EdgeReference{
 			Edge:            er.Context_.Edge,
 			MapKey:          er.Context_.Key,
@@ -932,6 +1191,9 @@ func (c *compiler) compileEdge(obj *d2graph.Object, e *d2ir.Edge) {
 }
 
 func (c *compiler) compileEdgeMap(edge *d2graph.Edge, m *d2ir.Map) {
+	if c.stopped() {
+		return
+	}
 	class := m.GetField(d2ast.FlatUnquotedString("class"))
 	if class != nil {
 		var classNames []string
@@ -940,6 +1202,9 @@ func (c *compiler) compileEdgeMap(edge *d2graph.Edge, m *d2ir.Map) {
 		} else if class.Composite != nil {
 			if arr, ok := class.Composite.(*d2ir.Array); ok {
 				for _, class := range arr.Values {
+					if c.stopped() {
+						return
+					}
 					if scalar, ok := class.(*d2ir.Scalar); ok {
 						classNames = append(classNames, scalar.Value.ScalarString())
 					} else {
@@ -950,9 +1215,17 @@ func (c *compiler) compileEdgeMap(edge *d2graph.Edge, m *d2ir.Map) {
 		}
 
 		for _, className := range classNames {
-			classMap := m.GetClassMap(className)
+			if c.stopped() {
+				return
+			}
+			classMap := c.getClassMap(m, className)
 			if classMap != nil {
 				if c.beginClass(class, className, classMap) {
+					if err := d2ir.ReserveVariableExpansionCopy(c.ctx, classMap); err != nil {
+						c.fatalErr = err
+						c.endClass(classMap)
+						return
+					}
 					c.compileEdgeMap(edge, classMap)
 					c.endClass(classMap)
 				}
@@ -960,6 +1233,9 @@ func (c *compiler) compileEdgeMap(edge *d2graph.Edge, m *d2ir.Map) {
 		}
 	}
 	for _, f := range m.Fields {
+		if c.stopped() {
+			return
+		}
 		_, ok := d2ast.ReservedKeywords[f.Name.ScalarString()]
 		if !(ok && f.Name.IsUnquoted()) {
 			c.errorf(f.References[0].AST(), `edge map keys must be reserved keywords`)
@@ -995,6 +1271,9 @@ func (c *compiler) compileEdgeField(edge *d2graph.Edge, f *d2ir.Field) {
 }
 
 func (c *compiler) compileArrowheads(edge *d2graph.Edge, f *d2ir.Field) {
+	if c.stopped() {
+		return
+	}
 	var attrs *d2graph.Attributes
 	if f.Name.ScalarString() == "source-arrowhead" {
 		if edge.SrcArrowhead == nil {
@@ -1014,6 +1293,9 @@ func (c *compiler) compileArrowheads(edge *d2graph.Edge, f *d2ir.Field) {
 
 	if f.Map() != nil {
 		for _, f2 := range f.Map().Fields {
+			if c.stopped() {
+				return
+			}
 			keyword := strings.ToLower(f2.Name.ScalarString())
 			_, isReserved := d2ast.SimpleReservedKeywords[keyword]
 			isReserved = isReserved && f2.Name.IsUnquoted()
@@ -1047,8 +1329,14 @@ var ShortToFullLanguageAliases = map[string]string{
 var FullToShortLanguageAliases map[string]string
 
 func (c *compiler) compileClass(obj *d2graph.Object) {
+	if c.stopped() {
+		return
+	}
 	obj.Class = &d2target.Class{}
 	for _, f := range obj.ChildrenArray {
+		if c.stopped() {
+			return
+		}
 		visibility := "public"
 		name := f.IDVal
 		// See https://www.uml-diagrams.org/visibility.html
@@ -1095,7 +1383,13 @@ func (c *compiler) compileClass(obj *d2graph.Object) {
 	}
 
 	for _, ch := range obj.ChildrenArray {
+		if c.stopped() {
+			return
+		}
 		for i := 0; i < len(obj.Graph.Objects); i++ {
+			if c.stopped() {
+				return
+			}
 			if obj.Graph.Objects[i] == ch {
 				obj.Graph.Objects = append(obj.Graph.Objects[:i], obj.Graph.Objects[i+1:]...)
 				i--
@@ -1107,8 +1401,14 @@ func (c *compiler) compileClass(obj *d2graph.Object) {
 }
 
 func (c *compiler) compileSQLTable(obj *d2graph.Object) {
+	if c.stopped() {
+		return
+	}
 	obj.SQLTable = &d2target.SQLTable{}
 	for _, col := range obj.ChildrenArray {
+		if c.stopped() {
+			return
+		}
 		typ := col.Label.Value
 		if typ == col.IDVal {
 			// Not great, AST should easily allow specifying alternate primary field
@@ -1124,7 +1424,13 @@ func (c *compiler) compileSQLTable(obj *d2graph.Object) {
 	}
 
 	for _, ch := range obj.ChildrenArray {
+		if c.stopped() {
+			return
+		}
 		for i := 0; i < len(obj.Graph.Objects); i++ {
+			if c.stopped() {
+				return
+			}
 			if obj.Graph.Objects[i] == ch {
 				obj.Graph.Objects = append(obj.Graph.Objects[:i], obj.Graph.Objects[i+1:]...)
 				i--
@@ -1137,6 +1443,9 @@ func (c *compiler) compileSQLTable(obj *d2graph.Object) {
 
 func (c *compiler) validateKeys(obj *d2graph.Object, m *d2ir.Map) {
 	for _, f := range m.Fields {
+		if c.stopped() {
+			return
+		}
 		if _, ok := d2ast.BoardKeywords[f.Name.ScalarString()]; ok && f.Name.IsUnquoted() {
 			continue
 		}
@@ -1200,6 +1509,9 @@ func (c *compiler) validateKey(obj *d2graph.Object, f *d2ir.Field) {
 
 func (c *compiler) validateLabels(g *d2graph.Graph) {
 	for _, obj := range g.Objects {
+		if c.stopped() {
+			return
+		}
 		if strings.EqualFold(obj.Shape.Value, d2target.ShapeText) {
 			if obj.Attributes.Language != "" {
 				// blockstrings have already been validated
@@ -1218,6 +1530,9 @@ func (c *compiler) validateLabels(g *d2graph.Graph) {
 
 func (c *compiler) validateNear(g *d2graph.Graph) {
 	for _, obj := range g.Objects {
+		if c.stopped() {
+			return
+		}
 		if obj.NearKey != nil {
 			nearObj, isKey := g.Root.HasChild(d2graph.Key(obj.NearKey))
 			_, isConst := d2ast.NearConstants[d2graph.Key(obj.NearKey)[0]]
@@ -1277,6 +1592,9 @@ func (c *compiler) validateNear(g *d2graph.Graph) {
 	}
 
 	for _, edge := range g.Edges {
+		if c.stopped() {
+			return
+		}
 		if edge.Src.IsConstantNear() && edge.Dst.IsDescendantOf(edge.Src) {
 			c.errorf(edge.GetAstEdge(), "edge from constant near %#v cannot enter itself", edge.Src.AbsID())
 			continue
@@ -1291,7 +1609,13 @@ func (c *compiler) validateNear(g *d2graph.Graph) {
 
 func (c *compiler) validatePositionsCompatibility(g *d2graph.Graph) {
 	for _, o := range g.Objects {
+		if c.stopped() {
+			return
+		}
 		for _, pos := range []*d2graph.Scalar{o.Top, o.Left} {
+			if c.stopped() {
+				return
+			}
 			if pos != nil {
 				if o.Parent != nil {
 					if strings.EqualFold(o.Parent.Shape.Value, d2target.ShapeHierarchy) {
@@ -1311,6 +1635,9 @@ func (c *compiler) validatePositionsCompatibility(g *d2graph.Graph) {
 
 func (c *compiler) validateEdges(g *d2graph.Graph) {
 	for _, edge := range g.Edges {
+		if c.stopped() {
+			return
+		}
 		// edges from a grid to something outside is ok
 		//   grid -> outside : ok
 		//   grid -> grid.cell : not ok
@@ -1344,6 +1671,9 @@ func (c *compiler) validateEdges(g *d2graph.Graph) {
 
 func (c *compiler) validateBoardLinks(g *d2graph.Graph) {
 	for _, obj := range g.Objects {
+		if c.stopped() {
+			return
+		}
 		if obj.Link == nil {
 			continue
 		}
@@ -1375,12 +1705,21 @@ func (c *compiler) validateBoardLinks(g *d2graph.Graph) {
 		}
 	}
 	for _, b := range g.Layers {
+		if c.stopped() {
+			return
+		}
 		c.validateBoardLinks(b)
 	}
 	for _, b := range g.Scenarios {
+		if c.stopped() {
+			return
+		}
 		c.validateBoardLinks(b)
 	}
 	for _, b := range g.Steps {
+		if c.stopped() {
+			return
+		}
 		c.validateBoardLinks(b)
 	}
 }
@@ -1580,6 +1919,9 @@ FOR:
 
 func (c *compiler) setDefaultShapes(g *d2graph.Graph) {
 	for _, obj := range g.Objects {
+		if c.stopped() {
+			return
+		}
 		if obj.Shape.Value == "" {
 			if obj.OuterSequenceDiagram() != nil {
 				obj.Shape.Value = d2target.ShapeRectangle
