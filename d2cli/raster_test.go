@@ -27,7 +27,6 @@ import (
 	"github.com/d2lang/util-go/xmain"
 	"github.com/d2lang/util-go/xos"
 
-	"github.com/d2lang/d2/d2plugin"
 	"github.com/d2lang/d2/d2renderers/d2fonts"
 	"github.com/d2lang/d2/d2renderers/d2raster"
 	"github.com/d2lang/d2/d2renderers/d2scene"
@@ -174,18 +173,18 @@ func TestRasterFinalizersObserveCancellationBeforeSuccess(t *testing.T) {
 	}
 }
 
-func renderGIFFramesForTest(ctx context.Context, plugin d2plugin.Plugin, inputPath string, cacheImages bool, diagram *d2target.Diagram, opts d2svg.RenderOpts, intervalMs int, wantPreview bool) ([]image.Image, []byte, error) {
+func renderGIFFramesForTest(ctx context.Context, inputPath string, cacheImages bool, diagram *d2target.Diagram, opts d2svg.RenderOpts, intervalMs int, wantPreview bool) ([]image.Image, []byte, error) {
 	session, err := newGIFRenderSession()
 	if err != nil {
 		return nil, nil, err
 	}
-	return renderGIFFramesWithSessionForTest(ctx, plugin, inputPath, cacheImages, diagram, opts, intervalMs, session, wantPreview)
+	return renderGIFFramesWithSessionForTest(ctx, inputPath, cacheImages, diagram, opts, intervalMs, session, wantPreview)
 }
 
-func renderGIFFramesWithSessionForTest(ctx context.Context, plugin d2plugin.Plugin, inputPath string, cacheImages bool, diagram *d2target.Diagram, opts d2svg.RenderOpts, intervalMs int, session *d2raster.RenderSession, wantPreview bool) ([]image.Image, []byte, error) {
+func renderGIFFramesWithSessionForTest(ctx context.Context, inputPath string, cacheImages bool, diagram *d2target.Diagram, opts d2svg.RenderOpts, intervalMs int, session *d2raster.RenderSession, wantPreview bool) ([]image.Image, []byte, error) {
 	frames := make([]image.Image, 0)
 	summary, err := renderGIFWithSession(
-		ctx, plugin, inputPath, cacheImages, diagram, opts, intervalMs, session, nil, wantPreview,
+		ctx, inputPath, cacheImages, diagram, opts, intervalMs, session, nil, wantPreview,
 		nil,
 		func(_ int, frame image.Image) error {
 			frames = append(frames, frame)
@@ -201,7 +200,6 @@ func renderGIFFramesWithSessionForTest(ctx context.Context, plugin d2plugin.Plug
 func TestRenderGIFFramesUsesSharedSamplingAndLogicalScale(t *testing.T) {
 	frames, _, err := renderGIFFramesForTest(
 		context.Background(),
-		nil,
 		"-",
 		false,
 		simpleRasterDiagram(),
@@ -225,7 +223,7 @@ func TestRenderGIFFramesUsesSharedSamplingAndLogicalScale(t *testing.T) {
 func TestRenderGIFWorkspaceFramesMatchOwnedFrames(t *testing.T) {
 	diagram := animatedConnectionRasterDiagram()
 	opts := d2svg.RenderOpts{Pad: go2.Pointer(int64(0))}
-	owned, _, err := renderGIFFramesForTest(context.Background(), nil, "-", false, diagram, opts, 101, false)
+	owned, _, err := renderGIFFramesForTest(context.Background(), "-", false, diagram, opts, 101, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -238,7 +236,7 @@ func TestRenderGIFWorkspaceFramesMatchOwnedFrames(t *testing.T) {
 	borrowedPixels := make([][]byte, 0, len(owned))
 	borrowedBounds := make([]image.Rectangle, 0, len(owned))
 	_, err = renderGIFWithSession(
-		context.Background(), nil, "-", false, diagram, opts, 101, session, &workspace, false, nil,
+		context.Background(), "-", false, diagram, opts, 101, session, &workspace, false, nil,
 		func(frameIndex int, candidate image.Image) error {
 			frame, ok := candidate.(*image.NRGBA)
 			if !ok {
@@ -283,7 +281,7 @@ func TestRenderGIFSingleBoardWorkspaceMatchesOwnedEncoding(t *testing.T) {
 	opts := d2svg.RenderOpts{Pad: go2.Pointer(int64(0))}
 	const intervalMs = 101
 
-	frames, _, err := renderGIFFramesForTest(context.Background(), nil, "-", false, diagram, opts, intervalMs, false)
+	frames, _, err := renderGIFFramesForTest(context.Background(), "-", false, diagram, opts, intervalMs, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -300,7 +298,7 @@ func TestRenderGIFSingleBoardWorkspaceMatchesOwnedEncoding(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, _, err := renderGIF(context.Background(), nil, "-", false, diagram, opts, intervalMs, false)
+	got, _, err := renderGIF(context.Background(), "-", false, diagram, opts, intervalMs, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -317,7 +315,7 @@ func TestRenderGIFMultiBoardRetainsIndependentQuantizedFrames(t *testing.T) {
 	root.Layers = []*d2target.Diagram{child}
 
 	encoded, _, err := renderGIF(
-		context.Background(), nil, "-", false, root,
+		context.Background(), "-", false, root,
 		d2svg.RenderOpts{Pad: go2.Pointer(int64(0)), Scale: go2.Pointer(1.0)}, 1, false,
 	)
 	if err != nil {
@@ -409,7 +407,7 @@ func TestRenderGIFFramesReusesBoundedAssetSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	frames, _, err := renderGIFFramesWithSessionForTest(
-		context.Background(), nil, "-", false, simpleRasterDiagramWithLabel(),
+		context.Background(), "-", false, simpleRasterDiagramWithLabel(),
 		d2svg.RenderOpts{Pad: go2.Pointer(int64(0))}, 101, session, false,
 	)
 	if err != nil {
@@ -438,7 +436,7 @@ func TestRenderGIFRejectsRenderCacheAdmissionSkip(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, _, err = renderGIFFramesWithSessionForTest(
-		context.Background(), nil, "-", false, simpleRasterDiagramWithLabel(),
+		context.Background(), "-", false, simpleRasterDiagramWithLabel(),
 		d2svg.RenderOpts{Pad: go2.Pointer(int64(0))}, 101, session, false,
 	)
 	if err == nil || !strings.Contains(err.Error(), "render cache rejected bounded state") {
@@ -448,7 +446,7 @@ func TestRenderGIFRejectsRenderCacheAdmissionSkip(t *testing.T) {
 
 func TestRenderGIFSamplesAnimatedConnectionPixels(t *testing.T) {
 	frames, _, err := renderGIFFramesForTest(
-		context.Background(), nil, "-", false, animatedConnectionRasterDiagram(),
+		context.Background(), "-", false, animatedConnectionRasterDiagram(),
 		d2svg.RenderOpts{Pad: go2.Pointer(int64(0))}, 101, false,
 	)
 	if err != nil {
@@ -482,7 +480,7 @@ func TestRenderGIFSamplesAnimatedConnectionPixels(t *testing.T) {
 
 func TestRenderGIFPreservesExplicitScaleAndBoardOrder(t *testing.T) {
 	scaled, preview, err := renderGIFFramesForTest(
-		context.Background(), nil, "-", false, simpleRasterDiagram(),
+		context.Background(), "-", false, simpleRasterDiagram(),
 		d2svg.RenderOpts{Pad: go2.Pointer(int64(0)), Scale: go2.Pointer(0.5)}, 1, false,
 	)
 	if err != nil {
@@ -507,7 +505,7 @@ func TestRenderGIFPreservesExplicitScaleAndBoardOrder(t *testing.T) {
 	root.Scenarios = []*d2target.Diagram{scenario}
 	root.Steps = []*d2target.Diagram{step}
 	encoded, _, err := renderGIF(
-		context.Background(), nil, "-", false, root,
+		context.Background(), "-", false, root,
 		d2svg.RenderOpts{Pad: go2.Pointer(int64(0)), Scale: go2.Pointer(1.0)}, 34, false,
 	)
 	if err != nil {
@@ -565,7 +563,7 @@ func TestRenderGIFAllowsMetadataAcrossBoards(t *testing.T) {
 	root.Layers = []*d2target.Diagram{layer}
 
 	frames, _, err := renderGIFFramesForTest(
-		context.Background(), nil, "-", false, root,
+		context.Background(), "-", false, root,
 		d2svg.RenderOpts{Pad: go2.Pointer(int64(0)), Scale: go2.Pointer(1.0)}, 1, false,
 	)
 	if err != nil {
@@ -579,7 +577,6 @@ func TestRenderGIFAllowsMetadataAcrossBoards(t *testing.T) {
 func TestRenderGIFReturnsRootSVGForWatchPreview(t *testing.T) {
 	encoded, preview, err := renderGIF(
 		context.Background(),
-		nil,
 		"-",
 		false,
 		simpleRasterDiagram(),
@@ -596,31 +593,19 @@ func TestRenderGIFReturnsRootSVGForWatchPreview(t *testing.T) {
 }
 
 func TestRenderRasterSVGIsOptional(t *testing.T) {
-	svg, err := renderRasterSVG(context.Background(), nil, nil, d2svg.RenderOpts{}, false, true)
+	svg, err := renderRasterSVG(nil, d2svg.RenderOpts{}, false)
 	if err != nil || len(svg) != 0 {
 		t.Fatalf("unrequested raster SVG = %q, %v", svg, err)
 	}
 	svg, err = renderRasterSVG(
-		context.Background(), nil, simpleRasterDiagram(),
-		d2svg.RenderOpts{Pad: go2.Pointer(int64(0))}, true, false,
+		simpleRasterDiagram(),
+		d2svg.RenderOpts{Pad: go2.Pointer(int64(0))}, true,
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !bytes.Contains(svg, []byte("<svg")) {
 		t.Fatalf("requested raster SVG = %q", svg)
-	}
-
-	plugin := &pluginWithPostProcess{}
-	svg, err = renderRasterSVG(
-		context.Background(), plugin, simpleRasterDiagram(),
-		d2svg.RenderOpts{Pad: go2.Pointer(int64(0))}, true, true,
-	)
-	if err == nil || !strings.Contains(err.Error(), "postprocessor") {
-		t.Fatalf("mutating postprocessor error = %v", err)
-	}
-	if !bytes.Contains(svg, []byte("<svg")) {
-		t.Fatalf("partial raster preview = %q", svg)
 	}
 }
 
@@ -633,7 +618,7 @@ func TestFolderOnlyPNGReturnsFirstBoardPreview(t *testing.T) {
 	state := &xmain.State{Env: env, Log: cmdlog.NewTB(env, t), PWD: directory}
 
 	boards, written, err := render(
-		context.Background(), state, 0, nil,
+		context.Background(), state, 0,
 		d2svg.RenderOpts{Pad: go2.Pointer(int64(0)), Scale: go2.Pointer(1.0)},
 		"input.d2", filepath.Join(directory, "output.png"), false, false, nil,
 		root, PNG, "", true,
@@ -665,7 +650,7 @@ func TestBundleGIFPreviewEmbedsLocalImages(t *testing.T) {
 	}
 	diagram := rasterImageDiagram(assetURL)
 	opts := d2svg.RenderOpts{Pad: go2.Pointer(int64(0)), Scale: go2.Pointer(1.0)}
-	_, rawPreview, err := renderGIF(context.Background(), nil, inputPath, false, diagram, opts, 1, true)
+	_, rawPreview, err := renderGIF(context.Background(), inputPath, false, diagram, opts, 1, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -732,41 +717,11 @@ func TestBundleGIFPreviewBoundsReferencesAndExpandedOutput(t *testing.T) {
 	}
 }
 
-func TestRenderGIFRejectsMutatingPostProcessorAndCyclicBoards(t *testing.T) {
-	plugin := &pluginWithPostProcess{}
-	_, _, err := renderGIFFramesForTest(
-		context.Background(),
-		plugin,
-		"-",
-		false,
-		simpleRasterDiagram(),
-		d2svg.RenderOpts{Pad: go2.Pointer(int64(0)), Scale: go2.Pointer(1.0)},
-		1,
-		false,
-	)
-	if err == nil || !strings.Contains(err.Error(), "postprocessor") || !plugin.called {
-		t.Fatalf("mutating GIF postprocessor error/call = %v/%v", err, plugin.called)
-	}
-
+func TestRenderGIFRejectsCyclicBoards(t *testing.T) {
 	cyclic := simpleRasterDiagram()
 	cyclic.Layers = []*d2target.Diagram{cyclic}
 	if _, err := collectGIFBoards(context.Background(), cyclic, 10); err == nil || !strings.Contains(err.Error(), "cycle") {
 		t.Fatalf("cyclic GIF board tree error = %v", err)
-	}
-}
-
-func TestPostProcessorValidationRejectsInPlaceMutation(t *testing.T) {
-	plugin := &inPlacePostProcessPlugin{}
-	source := []byte("<svg/>")
-	wantSource := bytes.Clone(source)
-	if err := validateRasterPostProcessor(context.Background(), plugin, source); err == nil || !strings.Contains(err.Error(), "postprocessor") {
-		t.Fatalf("in-place postprocessor validation error = %v", err)
-	}
-	if !plugin.called {
-		t.Fatal("in-place postprocessor was not called")
-	}
-	if !bytes.Equal(source, wantSource) {
-		t.Fatalf("postprocessor validation let the postprocessor mutate source: %q", source)
 	}
 }
 
@@ -776,7 +731,6 @@ func TestRenderGIFRejectsCrossedNormalizedDimensions(t *testing.T) {
 	wide.Layers = []*d2target.Diagram{tall}
 	_, _, err := renderGIFFramesForTest(
 		context.Background(),
-		nil,
 		"-",
 		false,
 		wide,
@@ -793,7 +747,6 @@ func TestRenderGIFAppliesFrameLimitBeforeCanvasAllocation(t *testing.T) {
 	tooLarge := simpleRasterDiagramWithSize(4_096, 4_096)
 	_, _, err := renderGIFFramesForTest(
 		context.Background(),
-		nil,
 		"-",
 		false,
 		tooLarge,
@@ -873,7 +826,6 @@ func TestGIFSharesOperationAssetResolverAcrossBoards(t *testing.T) {
 	root.Layers = []*d2target.Diagram{rasterImageDiagram(assetURL)}
 	frames, _, err := renderGIFFramesForTest(
 		trustedAssetContext(),
-		nil,
 		"-",
 		false,
 		root,
@@ -936,40 +888,6 @@ func TestGIFDividesOperationWorkBudgets(t *testing.T) {
 	}
 	if _, err := newFontFallbackOptions(0); err == nil {
 		t.Fatal("font fallback options accepted zero boards")
-	}
-}
-
-func TestRasterRejectsMutatingPostProcessorBeforeDestination(t *testing.T) {
-	directory := t.TempDir()
-	outputPath := filepath.Join(directory, "output.png")
-	plugin := &pluginWithPostProcess{}
-	_, written, err := _renderWithPNGEncoder(
-		context.Background(),
-		&xmain.State{},
-		plugin,
-		d2svg.RenderOpts{Pad: go2.Pointer(int64(0)), Scale: go2.Pointer(1.0)},
-		"input.d2",
-		outputPath,
-		true,
-		false,
-		nil,
-		simpleRasterDiagram(),
-		PNG,
-		"",
-		false,
-		nil,
-	)
-	if err == nil || !strings.Contains(err.Error(), "postprocessor") || !strings.Contains(err.Error(), "disable") {
-		t.Fatalf("_renderWithPNGEncoder() error = %v, want actionable postprocessor error", err)
-	}
-	if written {
-		t.Fatal("postprocessor rejection reported a touched destination")
-	}
-	if !plugin.called {
-		t.Fatal("postprocessor validation did not call the postprocessor")
-	}
-	if _, statErr := os.Stat(outputPath); !os.IsNotExist(statErr) {
-		t.Fatalf("postprocessor rejection created destination: %v", statErr)
 	}
 }
 
@@ -1274,19 +1192,6 @@ func animatedConnectionRasterDiagram() *d2target.Diagram {
 		Stroke: "#000000", StrokeWidth: 2, BorderRadius: 10, Opacity: 1,
 	}}
 	return diagram
-}
-
-type inPlacePostProcessPlugin struct {
-	pluginWithoutPostProcess
-	called bool
-}
-
-func (p *inPlacePostProcessPlugin) PostProcess(_ context.Context, input []byte) ([]byte, error) {
-	p.called = true
-	if len(input) != 0 {
-		input[0] ^= 0xff
-	}
-	return input, nil
 }
 
 func simpleRasterDiagramWithSize(width, height int) *d2target.Diagram {

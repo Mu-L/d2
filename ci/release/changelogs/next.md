@@ -18,8 +18,7 @@
   - Require Go API callers to choose an explicit rooted or trusted unrestricted
     policy for local imports and image assets. CLI and watch retain trusted
     local-file access. [#2901](https://github.com/d2lang/d2/pull/2901)
-- plugins: discover external layout-plugin binaries without running them, and
-  execute only an unambiguously selected external engine. [#2897](https://github.com/d2lang/d2/pull/2897)
+- Remove the legacy `d2plugin` system; Dagre, ELK, and TALA remain built in. [#2920](https://github.com/d2lang/d2/pull/2920)
 - watch: authenticate HTTP and WebSocket access with a fresh per-process
   capability, exchanged for a token-free browser session. [#2910](https://github.com/d2lang/d2/pull/2910)
 - exports:

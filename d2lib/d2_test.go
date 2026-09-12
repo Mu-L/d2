@@ -99,7 +99,7 @@ steps: {
 			return func(_ context.Context, graph *d2graph.Graph) error {
 				seeds := graph.Data["tala-seeds"].([]interface{})
 				seen = append(seen, append([]interface{}(nil), seeds...))
-				// Mutating one board's plugin data must not affect later boards.
+				// Mutating one board's layout data must not affect later boards.
 				seeds[0] = "mutated"
 				graph.Data["board-local"] = true
 				for i, object := range graph.Objects {

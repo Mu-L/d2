@@ -11,10 +11,8 @@ import (
 	"log/slog"
 	"net/url"
 	"os"
-	"os/exec"
 	"os/user"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
@@ -24,10 +22,8 @@ import (
 	"github.com/d2lang/util-go/xmain"
 
 	"github.com/d2lang/d2/d2ast"
-	"github.com/d2lang/d2/d2graph"
 	"github.com/d2lang/d2/d2lib"
 	"github.com/d2lang/d2/d2parser"
-	"github.com/d2lang/d2/d2plugin"
 	"github.com/d2lang/d2/d2renderers/d2animate"
 	"github.com/d2lang/d2/d2renderers/d2ascii"
 	"github.com/d2lang/d2/d2renderers/d2ascii/charset"
@@ -37,6 +33,7 @@ import (
 	"github.com/d2lang/d2/d2target"
 	"github.com/d2lang/d2/d2themes"
 	"github.com/d2lang/d2/d2themes/d2themescatalog"
+	"github.com/d2lang/d2/internal/d2layoutfeatures"
 	"github.com/d2lang/d2/lib/background"
 	"github.com/d2lang/d2/lib/imgbundler"
 	"github.com/d2lang/d2/lib/localfile"
@@ -173,16 +170,7 @@ func Run(ctx context.Context, ms *xmain.State) (err error) {
 		return err
 	}
 
-	plugins, err := d2plugin.ListPlugins(ctx)
-	if err != nil {
-		return err
-	}
-	selectedLayout, selectionOK := layoutFromArgs(ms.Opts.Args, ms.Opts.Flags, *layoutFlag)
-	if selectionOK {
-		if err := populateLayoutOpts(ctx, ms, plugins, selectedLayout); err != nil {
-			return err
-		}
-	}
+	populateLayoutOpts(ms)
 
 	err = ms.Opts.Flags.Parse(ms.Opts.Args)
 	if !errors.Is(err, pflag.ErrHelp) && err != nil {
@@ -203,7 +191,7 @@ func Run(ctx context.Context, ms *xmain.State) (err error) {
 	if len(ms.Opts.Flags.Args()) > 0 {
 		switch ms.Opts.Flags.Arg(0) {
 		case "layout":
-			return layoutCmd(ctx, ms, plugins)
+			return layoutCmd(ctx, ms)
 		case "themes":
 			themesCmd(ctx, ms)
 			return nil
@@ -368,7 +356,6 @@ func Run(ctx context.Context, ms *xmain.State) (err error) {
 			ms.Log.Debug.Printf("GIF export: animate-interval not specified, defaulting to 1000ms")
 		}
 		w, err := newWatcher(ctx, ms, watcherOpts{
-			plugins:         plugins,
 			layout:          layoutFlag,
 			renderOpts:      renderOpts,
 			animateInterval: animateInterval,
@@ -420,7 +407,7 @@ func Run(ctx context.Context, ms *xmain.State) (err error) {
 
 	// The CLI is a trusted local application and intentionally preserves its
 	// historical ability to import arbitrary host files.
-	_, written, err := compile(ctx, ms, plugins, localfile.Unrestricted(), layoutFlag, renderOpts, fontFamily, monoFontFamily, animateInterval, inputPath, outputPath, boardPath, noChildren, *bundleFlag, *forceAppendixFlag, outputFormat, *asciiModeFlag, false)
+	_, written, err := compile(ctx, ms, localfile.Unrestricted(), layoutFlag, renderOpts, fontFamily, monoFontFamily, animateInterval, inputPath, outputPath, boardPath, noChildren, *bundleFlag, *forceAppendixFlag, outputFormat, *asciiModeFlag, false)
 	if err != nil {
 		if written {
 			return fmt.Errorf("failed to fully compile (partial render written) %s: %w", ms.HumanPath(inputPath), err)
@@ -430,237 +417,7 @@ func Run(ctx context.Context, ms *xmain.State) (err error) {
 	return nil
 }
 
-func layoutFromArgs(args []string, baseFlags *pflag.FlagSet, fallback string) (string, bool) {
-	if layoutSelectionIsAmbiguous(args, baseFlags) {
-		return fallback, false
-	}
-
-	staged := pflag.NewFlagSet("layout selection", pflag.ContinueOnError)
-	staged.SetOutput(io.Discard)
-	staged.Usage = func() {}
-	staged.ParseErrorsAllowlist.UnknownFlags = true
-
-	valid := true
-	baseFlags.VisitAll(func(flag *pflag.Flag) {
-		if !valid {
-			return
-		}
-		value, ok := newStagedFlagValue(flag.Value.Type(), flag.DefValue)
-		if !ok {
-			valid = false
-			return
-		}
-		copy := *flag
-		copy.Value = value
-		copy.Changed = false
-		staged.AddFlag(&copy)
-	})
-	if !valid {
-		return fallback, false
-	}
-	if err := staged.Parse(args); err != nil {
-		// The real parser below will return the authoritative help or usage
-		// result. Most importantly, do not execute a plugin named only in
-		// arguments that pflag would never reach.
-		return fallback, false
-	}
-	layout, err := staged.GetString("layout")
-	if err != nil {
-		return fallback, false
-	}
-	return layout, true
-}
-
-// layoutSelectionIsAmbiguous applies a conservative ordering rule for plugin
-// flags that are not registered yet: a bare unknown flag must not precede a
-// layout selection or override. Such a flag might be boolean and leave the
-// layout token to be parsed, or it might require a value and consume that same
-// token. Attached values are unambiguous and remain supported.
-//
-// Known base flags are skipped using their real pflag arity so a layout-looking
-// value of --browser (or another known value flag) is not mistaken for a
-// selection. Once a bare unknown is found, the suffix check intentionally also
-// looks past --: a value-taking plugin flag could consume that terminator.
-func layoutSelectionIsAmbiguous(args []string, baseFlags *pflag.FlagSet) bool {
-	layoutFlag := baseFlags.Lookup("layout")
-	if layoutFlag == nil {
-		return true
-	}
-
-	for i := 0; i < len(args); i++ {
-		arg := args[i]
-		if len(arg) < 2 || arg[0] != '-' {
-			continue
-		}
-		if arg == "--" {
-			break
-		}
-		if strings.HasPrefix(arg, "--") {
-			name, _, hasAttachedValue := strings.Cut(arg[2:], "=")
-			flag := baseFlags.Lookup(name)
-			if flag == nil {
-				if !hasAttachedValue && argsContainLayoutSyntax(args[i+1:], layoutFlag) {
-					return true
-				}
-				continue
-			}
-			if !hasAttachedValue && flag.NoOptDefVal == "" && i+1 < len(args) {
-				i++
-			}
-			continue
-		}
-
-		shorthands := arg[1:]
-		for len(shorthands) > 0 {
-			flag := baseFlags.ShorthandLookup(shorthands[:1])
-			hasAttachedValue := len(shorthands) > 1 && shorthands[1] == '='
-			if flag == nil {
-				containsLayoutShorthand := layoutFlag.Shorthand != "" && strings.Contains(shorthands[1:], layoutFlag.Shorthand)
-				if !hasAttachedValue && (containsLayoutShorthand || argsContainLayoutSyntax(args[i+1:], layoutFlag)) {
-					return true
-				}
-				if hasAttachedValue {
-					break
-				}
-				shorthands = shorthands[1:]
-				continue
-			}
-			if hasAttachedValue || flag.NoOptDefVal == "" {
-				if !hasAttachedValue && len(shorthands) == 1 && i+1 < len(args) {
-					i++
-				}
-				break
-			}
-			shorthands = shorthands[1:]
-		}
-	}
-	return false
-}
-
-func argsContainLayoutSyntax(args []string, layoutFlag *pflag.Flag) bool {
-	long := "--" + layoutFlag.Name
-	for _, arg := range args {
-		if arg == long || strings.HasPrefix(arg, long+"=") || shortsContainLayoutSyntax(arg, layoutFlag) {
-			return true
-		}
-	}
-	return false
-}
-
-func shortsContainLayoutSyntax(arg string, layoutFlag *pflag.Flag) bool {
-	if layoutFlag.Shorthand == "" || len(arg) < 2 || arg[0] != '-' || arg[1] == '-' {
-		return false
-	}
-	return strings.Contains(arg[1:], layoutFlag.Shorthand)
-}
-
-type stagedFlagValue struct {
-	typeName string
-	value    string
-}
-
-func newStagedFlagValue(typeName, value string) (*stagedFlagValue, bool) {
-	v := &stagedFlagValue{typeName: typeName, value: value}
-	if err := v.Set(value); err != nil {
-		return nil, false
-	}
-	return v, true
-}
-
-func (v *stagedFlagValue) Set(value string) error {
-	var err error
-	switch v.typeName {
-	case "string":
-	case "bool":
-		_, err = strconv.ParseBool(value)
-	case "int64":
-		_, err = strconv.ParseInt(value, 0, 64)
-	case "float64":
-		_, err = strconv.ParseFloat(value, 64)
-	default:
-		return fmt.Errorf("unsupported staged flag type %q", v.typeName)
-	}
-	if err != nil {
-		return err
-	}
-	v.value = value
-	return nil
-}
-
-func (v *stagedFlagValue) String() string {
-	return v.value
-}
-
-func (v *stagedFlagValue) Type() string {
-	return v.typeName
-}
-
-func LayoutResolver(ctx context.Context, ms *xmain.State, plugins []d2plugin.Plugin) func(engine string) (d2graph.LayoutGraph, error) {
-	cached := make(map[string]d2graph.LayoutGraph)
-	return func(engine string) (d2graph.LayoutGraph, error) {
-		if c, ok := cached[engine]; ok {
-			return c, nil
-		}
-
-		plugin, err := d2plugin.FindPlugin(ctx, plugins, engine)
-		if err != nil {
-			if errors.Is(err, exec.ErrNotFound) {
-				return nil, layoutNotFound(ctx, plugins, engine)
-			}
-			return nil, err
-		}
-
-		err = d2plugin.HydratePluginOpts(ctx, ms, plugin)
-		if err != nil {
-			return nil, err
-		}
-
-		cached[engine] = plugin.Layout
-		return plugin.Layout, nil
-	}
-}
-
-func RouterResolver(ctx context.Context, ms *xmain.State, plugins []d2plugin.Plugin) func(engine string) (d2graph.RouteEdges, error) {
-	cached := make(map[string]d2graph.RouteEdges)
-	return func(engine string) (d2graph.RouteEdges, error) {
-		if c, ok := cached[engine]; ok {
-			return c, nil
-		}
-
-		plugin, err := d2plugin.FindPlugin(ctx, plugins, engine)
-		if err != nil {
-			if errors.Is(err, exec.ErrNotFound) {
-				return nil, layoutNotFound(ctx, plugins, engine)
-			}
-			return nil, err
-		}
-
-		pluginInfo, err := plugin.Info(ctx)
-		if err != nil {
-			return nil, err
-		}
-		hasRouter := false
-		for _, feat := range pluginInfo.Features {
-			if feat == d2plugin.ROUTES_EDGES {
-				hasRouter = true
-				break
-			}
-		}
-		if !hasRouter {
-			return nil, nil
-		}
-		routingPlugin, ok := plugin.(d2plugin.RoutingPlugin)
-		if !ok {
-			return nil, fmt.Errorf("plugin has routing feature but does not implement RoutingPlugin")
-		}
-
-		routeEdges := d2graph.RouteEdges(routingPlugin.RouteEdges)
-		cached[engine] = routeEdges
-		return routeEdges, nil
-	}
-}
-
-func compile(ctx context.Context, ms *xmain.State, plugins []d2plugin.Plugin, fs fs.FS, layout *string, renderOpts d2svg.RenderOpts, fontFamily *d2fonts.FontFamily, monoFontFamily *d2fonts.FontFamily, animateInterval int64, inputPath, outputPath string, boardPath []string, noChildren, bundle, forceAppendix bool, ext exportExtension, asciiMode string, wantPreview bool) (_ []byte, written bool, _ error) {
+func compile(ctx context.Context, ms *xmain.State, fs fs.FS, layout *string, renderOpts d2svg.RenderOpts, fontFamily *d2fonts.FontFamily, monoFontFamily *d2fonts.FontFamily, animateInterval int64, inputPath, outputPath string, boardPath []string, noChildren, bundle, forceAppendix bool, ext exportExtension, asciiMode string, wantPreview bool) (_ []byte, written bool, _ error) {
 	// Use ELK layout for ascii outputs when layout is dagre or unspecified
 	if ext == TXT {
 		if layout == nil || *layout == "dagre" {
@@ -691,9 +448,9 @@ func compile(ctx context.Context, ms *xmain.State, plugins []d2plugin.Plugin, fs
 		FontFamily:     fontFamily,
 		MonoFontFamily: monoFontFamily,
 		InputPath:      inputPath,
-		LayoutResolver: LayoutResolver(ctx, ms, plugins),
+		LayoutResolver: LayoutResolver(ctx, ms),
 		Layout:         layout,
-		RouterResolver: RouterResolver(ctx, ms, plugins),
+		RouterResolver: RouterResolver(ctx, ms),
 		FS:             fs,
 		LayoutReuse:    true,
 	}
@@ -738,8 +495,6 @@ func compile(ctx context.Context, ms *xmain.State, plugins []d2plugin.Plugin, fs
 		diagram.Steps = nil
 	}
 
-	plugin, _ := d2plugin.FindPlugin(ctx, plugins, *opts.Layout)
-
 	if animateInterval > 0 {
 		masterID, err := diagram.HashID(renderOpts.Salt)
 		if err != nil {
@@ -748,30 +503,18 @@ func compile(ctx context.Context, ms *xmain.State, plugins []d2plugin.Plugin, fs
 		renderOpts.MasterID = masterID
 	}
 
-	pinfo, err := plugin.Info(ctx)
-	if err != nil {
-		return nil, false, err
+	if !isBuiltinLayout(*opts.Layout) {
+		return nil, false, layoutNotFound(*opts.Layout)
 	}
-	plocation := pinfo.Type
-	if pinfo.Type == "binary" {
-		plocation = fmt.Sprintf("executable plugin at %s", humanPath(pinfo.Path))
-	}
-	ms.Log.Debug.Printf("using layout plugin %s (%s)", *opts.Layout, plocation)
-
-	pluginInfo, err := plugin.Info(ctx)
-	if err != nil {
-		return nil, false, err
-	}
-
-	err = d2plugin.FeatureSupportCheck(pluginInfo, g)
-	if err != nil {
+	ms.Log.Debug.Printf("using layout engine %s (built-in)", strings.ToLower(*opts.Layout))
+	if err := d2layoutfeatures.Check(*opts.Layout, g); err != nil {
 		return nil, false, err
 	}
 
 	switch ext {
 	case GIF:
 		cacheImages := ms.Env.Getenv("IMG_CACHE") == "1"
-		out, previewSVG, err := renderGIF(ctx, plugin, inputPath, cacheImages, diagram, renderOpts, int(animateInterval), wantPreview)
+		out, previewSVG, err := renderGIF(ctx, inputPath, cacheImages, diagram, renderOpts, int(animateInterval), wantPreview)
 		if err != nil {
 			return nil, false, err
 		}
@@ -805,14 +548,14 @@ func compile(ctx context.Context, ms *xmain.State, plugins []d2plugin.Plugin, fs
 		var outputWritten bool
 		if outputPath == "-" {
 			var output bytes.Buffer
-			preview, err = renderPDFTo(ctx, plugin, renderOpts, inputPath, &output, cacheImages, ruler, diagram, path, diagram.Root.Label != "", wantPreview)
+			preview, err = renderPDFTo(ctx, renderOpts, inputPath, &output, cacheImages, ruler, diagram, path, diagram.Root.Label != "", wantPreview)
 			if err == nil {
 				outputWritten, err = runStatusFinalizer(ctx, func() (bool, error) {
 					return writeStdout(ms.Stdout, output.Bytes())
 				})
 			}
 		} else {
-			preview, outputWritten, err = renderPDFWithStatus(ctx, plugin, renderOpts, inputPath, outputPath, cacheImages, ruler, diagram, path, diagram.Root.Label != "", wantPreview)
+			preview, outputWritten, err = renderPDFWithStatus(ctx, renderOpts, inputPath, outputPath, cacheImages, ruler, diagram, path, diagram.Root.Label != "", wantPreview)
 		}
 		if err != nil {
 			return preview, outputWritten, err
@@ -843,7 +586,7 @@ func compile(ctx context.Context, ms *xmain.State, plugins []d2plugin.Plugin, fs
 			return nil, false, err
 		}
 		cacheImages := ms.Env.Getenv("IMG_CACHE") == "1"
-		preview, err := renderPPTX(ctx, p, plugin, renderOpts, inputPath, cacheImages, ruler, diagram, path, wantPreview)
+		preview, err := renderPPTX(ctx, p, renderOpts, inputPath, cacheImages, ruler, diagram, path, wantPreview)
 		if err != nil {
 			return preview, false, err
 		}
@@ -901,9 +644,9 @@ func compile(ctx context.Context, ms *xmain.State, plugins []d2plugin.Plugin, fs
 			outputPaths = outputWorkspace.outputPaths(outputPath)
 		}
 		if noChildren {
-			boards, outputWritten, err = renderSingle(ctx, ms, compileDur, plugin, renderOpts, inputPath, outputPath, bundle, forceAppendix, ruler, diagram, ext, asciiMode, wantPreview)
+			boards, outputWritten, err = renderSingle(ctx, ms, compileDur, renderOpts, inputPath, outputPath, bundle, forceAppendix, ruler, diagram, ext, asciiMode, wantPreview)
 		} else {
-			boards, outputWritten, err = renderToPaths(ctx, ms, compileDur, plugin, renderOpts, inputPath, outputPaths, bundle, forceAppendix, ruler, diagram, ext, asciiMode, wantPreview)
+			boards, outputWritten, err = renderToPaths(ctx, ms, compileDur, renderOpts, inputPath, outputPaths, bundle, forceAppendix, ruler, diagram, ext, asciiMode, wantPreview)
 		}
 		if err != nil {
 			if outputWorkspace != nil {
@@ -923,10 +666,6 @@ func compile(ctx context.Context, ms *xmain.State, plugins []d2plugin.Plugin, fs
 			out = boards[0]
 			if animateInterval > 0 {
 				out, err = d2animate.Wrap(diagram, boards, renderOpts, int(animateInterval))
-				if err != nil {
-					return nil, false, err
-				}
-				out, err = postProcess(ctx, plugin, out)
 				if err != nil {
 					return nil, false, err
 				}
@@ -1048,32 +787,24 @@ func boardOutputLink(path string) string {
 	return strings.Join(parts, "/")
 }
 
-func postProcess(ctx context.Context, plugin d2plugin.Plugin, in []byte) ([]byte, error) {
-	postProcessor, ok := plugin.(d2plugin.PostProcessor)
-	if !ok {
-		return in, nil
-	}
-	return postProcessor.PostProcess(ctx, in)
+func render(ctx context.Context, ms *xmain.State, compileDur time.Duration, opts d2svg.RenderOpts, inputPath, outputPath string, bundle, forceAppendix bool, ruler *textmeasure.Ruler, diagram *d2target.Diagram, ext exportExtension, asciiMode string, wantPreview bool) (_ [][]byte, written bool, _ error) {
+	return renderToPaths(ctx, ms, compileDur, opts, inputPath, newBoardOutputPaths(outputPath), bundle, forceAppendix, ruler, diagram, ext, asciiMode, wantPreview)
 }
 
-func render(ctx context.Context, ms *xmain.State, compileDur time.Duration, plugin d2plugin.Plugin, opts d2svg.RenderOpts, inputPath, outputPath string, bundle, forceAppendix bool, ruler *textmeasure.Ruler, diagram *d2target.Diagram, ext exportExtension, asciiMode string, wantPreview bool) (_ [][]byte, written bool, _ error) {
-	return renderToPaths(ctx, ms, compileDur, plugin, opts, inputPath, newBoardOutputPaths(outputPath), bundle, forceAppendix, ruler, diagram, ext, asciiMode, wantPreview)
-}
-
-func renderToPaths(ctx context.Context, ms *xmain.State, compileDur time.Duration, plugin d2plugin.Plugin, opts d2svg.RenderOpts, inputPath string, outputPaths boardOutputPaths, bundle, forceAppendix bool, ruler *textmeasure.Ruler, diagram *d2target.Diagram, ext exportExtension, asciiMode string, wantPreview bool) (_ [][]byte, written bool, _ error) {
+func renderToPaths(ctx context.Context, ms *xmain.State, compileDur time.Duration, opts d2svg.RenderOpts, inputPath string, outputPaths boardOutputPaths, bundle, forceAppendix bool, ruler *textmeasure.Ruler, diagram *d2target.Diagram, ext exportExtension, asciiMode string, wantPreview bool) (_ [][]byte, written bool, _ error) {
 	if ext == PNG {
 		var encoder rasterPNGEncoder
 		defer encoder.close()
-		return renderWithPNGEncoderToPaths(ctx, ms, compileDur, plugin, opts, inputPath, outputPaths, bundle, forceAppendix, ruler, diagram, ext, asciiMode, wantPreview, &encoder)
+		return renderWithPNGEncoderToPaths(ctx, ms, compileDur, opts, inputPath, outputPaths, bundle, forceAppendix, ruler, diagram, ext, asciiMode, wantPreview, &encoder)
 	}
-	return renderWithPNGEncoderToPaths(ctx, ms, compileDur, plugin, opts, inputPath, outputPaths, bundle, forceAppendix, ruler, diagram, ext, asciiMode, wantPreview, nil)
+	return renderWithPNGEncoderToPaths(ctx, ms, compileDur, opts, inputPath, outputPaths, bundle, forceAppendix, ruler, diagram, ext, asciiMode, wantPreview, nil)
 }
 
-func renderWithPNGEncoder(ctx context.Context, ms *xmain.State, compileDur time.Duration, plugin d2plugin.Plugin, opts d2svg.RenderOpts, inputPath, outputPath string, bundle, forceAppendix bool, ruler *textmeasure.Ruler, diagram *d2target.Diagram, ext exportExtension, asciiMode string, wantPreview bool, pngEncoder *rasterPNGEncoder) (_ [][]byte, written bool, _ error) {
-	return renderWithPNGEncoderToPaths(ctx, ms, compileDur, plugin, opts, inputPath, newBoardOutputPaths(outputPath), bundle, forceAppendix, ruler, diagram, ext, asciiMode, wantPreview, pngEncoder)
+func renderWithPNGEncoder(ctx context.Context, ms *xmain.State, compileDur time.Duration, opts d2svg.RenderOpts, inputPath, outputPath string, bundle, forceAppendix bool, ruler *textmeasure.Ruler, diagram *d2target.Diagram, ext exportExtension, asciiMode string, wantPreview bool, pngEncoder *rasterPNGEncoder) (_ [][]byte, written bool, _ error) {
+	return renderWithPNGEncoderToPaths(ctx, ms, compileDur, opts, inputPath, newBoardOutputPaths(outputPath), bundle, forceAppendix, ruler, diagram, ext, asciiMode, wantPreview, pngEncoder)
 }
 
-func renderWithPNGEncoderToPaths(ctx context.Context, ms *xmain.State, compileDur time.Duration, plugin d2plugin.Plugin, opts d2svg.RenderOpts, inputPath string, outputPaths boardOutputPaths, bundle, forceAppendix bool, ruler *textmeasure.Ruler, diagram *d2target.Diagram, ext exportExtension, asciiMode string, wantPreview bool, pngEncoder *rasterPNGEncoder) (_ [][]byte, written bool, _ error) {
+func renderWithPNGEncoderToPaths(ctx context.Context, ms *xmain.State, compileDur time.Duration, opts d2svg.RenderOpts, inputPath string, outputPaths boardOutputPaths, bundle, forceAppendix bool, ruler *textmeasure.Ruler, diagram *d2target.Diagram, ext exportExtension, asciiMode string, wantPreview bool, pngEncoder *rasterPNGEncoder) (_ [][]byte, written bool, _ error) {
 	plan, err := planBoardOutput(outputPaths, diagram)
 	if err != nil {
 		return nil, false, err
@@ -1088,7 +819,7 @@ func renderWithPNGEncoderToPaths(ctx context.Context, ms *xmain.State, compileDu
 	var boards [][]byte
 	for _, dl := range diagram.Layers {
 		childPreview := wantPreview && diagram.IsFolderOnly && len(boards) == 0
-		childrenBoards, childWritten, err := renderWithPNGEncoderToPaths(ctx, ms, compileDur, plugin, opts, inputPath, plan.layers, bundle, forceAppendix, ruler, dl, ext, asciiMode, childPreview, pngEncoder)
+		childrenBoards, childWritten, err := renderWithPNGEncoderToPaths(ctx, ms, compileDur, opts, inputPath, plan.layers, bundle, forceAppendix, ruler, dl, ext, asciiMode, childPreview, pngEncoder)
 		written = written || childWritten
 		if err != nil {
 			return boards, written, err
@@ -1097,7 +828,7 @@ func renderWithPNGEncoderToPaths(ctx context.Context, ms *xmain.State, compileDu
 	}
 	for _, dl := range diagram.Scenarios {
 		childPreview := wantPreview && diagram.IsFolderOnly && len(boards) == 0
-		childrenBoards, childWritten, err := renderWithPNGEncoderToPaths(ctx, ms, compileDur, plugin, opts, inputPath, plan.scenarios, bundle, forceAppendix, ruler, dl, ext, asciiMode, childPreview, pngEncoder)
+		childrenBoards, childWritten, err := renderWithPNGEncoderToPaths(ctx, ms, compileDur, opts, inputPath, plan.scenarios, bundle, forceAppendix, ruler, dl, ext, asciiMode, childPreview, pngEncoder)
 		written = written || childWritten
 		if err != nil {
 			return boards, written, err
@@ -1106,7 +837,7 @@ func renderWithPNGEncoderToPaths(ctx context.Context, ms *xmain.State, compileDu
 	}
 	for _, dl := range diagram.Steps {
 		childPreview := wantPreview && diagram.IsFolderOnly && len(boards) == 0
-		childrenBoards, childWritten, err := renderWithPNGEncoderToPaths(ctx, ms, compileDur, plugin, opts, inputPath, plan.steps, bundle, forceAppendix, ruler, dl, ext, asciiMode, childPreview, pngEncoder)
+		childrenBoards, childWritten, err := renderWithPNGEncoderToPaths(ctx, ms, compileDur, opts, inputPath, plan.steps, bundle, forceAppendix, ruler, dl, ext, asciiMode, childPreview, pngEncoder)
 		written = written || childWritten
 		if err != nil {
 			return boards, written, err
@@ -1116,7 +847,7 @@ func renderWithPNGEncoderToPaths(ctx context.Context, ms *xmain.State, compileDu
 
 	if !diagram.IsFolderOnly {
 		start := time.Now()
-		out, boardWritten, err := _renderWithPNGEncoder(ctx, ms, plugin, opts, inputPath, plan.board.writePath, bundle, forceAppendix, ruler, diagram, ext, asciiMode, wantPreview, pngEncoder)
+		out, boardWritten, err := _renderWithPNGEncoder(ctx, ms, opts, inputPath, plan.board.writePath, bundle, forceAppendix, ruler, diagram, ext, asciiMode, wantPreview, pngEncoder)
 		written = written || boardWritten
 		if err != nil {
 			return boards, written, err
@@ -1131,9 +862,9 @@ func renderWithPNGEncoderToPaths(ctx context.Context, ms *xmain.State, compileDu
 	return boards, written, nil
 }
 
-func renderSingle(ctx context.Context, ms *xmain.State, compileDur time.Duration, plugin d2plugin.Plugin, opts d2svg.RenderOpts, inputPath, outputPath string, bundle, forceAppendix bool, ruler *textmeasure.Ruler, diagram *d2target.Diagram, outputFormat exportExtension, asciiMode string, wantPreview bool) ([][]byte, bool, error) {
+func renderSingle(ctx context.Context, ms *xmain.State, compileDur time.Duration, opts d2svg.RenderOpts, inputPath, outputPath string, bundle, forceAppendix bool, ruler *textmeasure.Ruler, diagram *d2target.Diagram, outputFormat exportExtension, asciiMode string, wantPreview bool) ([][]byte, bool, error) {
 	start := time.Now()
-	out, written, err := _renderWithPNGEncoder(ctx, ms, plugin, opts, inputPath, outputPath, bundle, forceAppendix, ruler, diagram, outputFormat, asciiMode, wantPreview, nil)
+	out, written, err := _renderWithPNGEncoder(ctx, ms, opts, inputPath, outputPath, bundle, forceAppendix, ruler, diagram, outputFormat, asciiMode, wantPreview, nil)
 	if err != nil {
 		return [][]byte{}, written, err
 	}
@@ -1144,7 +875,7 @@ func renderSingle(ctx context.Context, ms *xmain.State, compileDur time.Duration
 	return [][]byte{out}, written, nil
 }
 
-func _renderWithPNGEncoder(ctx context.Context, ms *xmain.State, plugin d2plugin.Plugin, opts d2svg.RenderOpts, inputPath, outputPath string, bundle, forceAppendix bool, ruler *textmeasure.Ruler, diagram *d2target.Diagram, outputFormat exportExtension, asciiMode string, wantPreview bool, pngEncoder *rasterPNGEncoder) ([]byte, bool, error) {
+func _renderWithPNGEncoder(ctx context.Context, ms *xmain.State, opts d2svg.RenderOpts, inputPath, outputPath string, bundle, forceAppendix bool, ruler *textmeasure.Ruler, diagram *d2target.Diagram, outputFormat exportExtension, asciiMode string, wantPreview bool, pngEncoder *rasterPNGEncoder) ([]byte, bool, error) {
 	if outputFormat == TXT {
 		var charsetType charset.Type
 		switch asciiMode {
@@ -1193,7 +924,7 @@ func _renderWithPNGEncoder(ctx context.Context, ms *xmain.State, plugin d2plugin
 	}
 	if toPNG {
 		returnSVG := wantPreview || opts.MasterID != ""
-		svg, err := renderRasterSVG(ctx, plugin, diagram, *renderOpts, returnSVG, opts.MasterID == "")
+		svg, err := renderRasterSVG(diagram, *renderOpts, returnSVG)
 		if err != nil {
 			return svg, false, err
 		}
@@ -1215,12 +946,6 @@ func _renderWithPNGEncoder(ctx context.Context, ms *xmain.State, plugin d2plugin
 	svg, err := d2svg.Render(diagram, renderOpts)
 	if err != nil {
 		return nil, false, err
-	}
-	if opts.MasterID == "" {
-		svg, err = postProcess(ctx, plugin, svg)
-		if err != nil {
-			return svg, false, err
-		}
 	}
 
 	cacheImages := ms.Env.Getenv("IMG_CACHE") == "1"
@@ -1273,21 +998,6 @@ func renameExt(fp string, newExt string) string {
 func getFileName(path string) string {
 	ext := filepath.Ext(path)
 	return strings.TrimSuffix(filepath.Base(path), ext)
-}
-
-func populateLayoutOpts(ctx context.Context, ms *xmain.State, ps []d2plugin.Plugin, selectedLayout string) error {
-	pluginFlags, err := d2plugin.ListPluginFlagsForSelection(ctx, ps, selectedLayout)
-	if err != nil {
-		return err
-	}
-
-	for _, f := range pluginFlags {
-		f.AddToOpts(ms.Opts)
-		// Don't pollute the main d2 flagset with these. It'll be a lot
-		ms.Opts.Flags.MarkHidden(f.Name)
-	}
-
-	return nil
 }
 
 func loadFont(ms *xmain.State, path string) ([]byte, error) {
