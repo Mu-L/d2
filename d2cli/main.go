@@ -19,7 +19,6 @@ import (
 	"time"
 
 	"github.com/spf13/pflag"
-	"go.uber.org/multierr"
 
 	"github.com/d2lang/util-go/go2"
 	"github.com/d2lang/util-go/xmain"
@@ -1226,11 +1225,14 @@ func _renderWithPNGEncoder(ctx context.Context, ms *xmain.State, plugin d2plugin
 
 	cacheImages := ms.Env.Getenv("IMG_CACHE") == "1"
 	l := simplelog.FromCmdLog(ms.Log)
-	svg, bundleErr := imgbundler.BundleLocalWithPolicy(ctx, l, inputPath, svg, localfile.Unrestricted(), cacheImages)
-	if bundle {
-		var bundleErr2 error
-		svg, bundleErr2 = imgbundler.BundleRemoteWithPolicy(ctx, l, svg, cacheImages, netpolicy.FromContext(ctx))
-		bundleErr = multierr.Combine(bundleErr, bundleErr2)
+	assetResolver, bundleErr := svgBundleResolver(ctx, inputPath, cacheImages)
+	if bundleErr == nil {
+		svg, bundleErr = imgbundler.BundleWithResolver(ctx, l, svg, imgbundler.BundleOptions{
+			Resolver: assetResolver,
+			Local:    true,
+			Remote:   bundle,
+		})
+		assetResolver.CloseIdleConnections()
 	}
 	if forceAppendix {
 		svg = appendix.Append(diagram, renderOpts, ruler, svg)

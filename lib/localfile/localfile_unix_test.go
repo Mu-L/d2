@@ -16,6 +16,7 @@ func TestPolicyRejectsFIFOWithoutBlocking(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = rooted.Close() })
 	for _, tc := range []struct {
 		name   string
 		policy Policy

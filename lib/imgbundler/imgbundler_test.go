@@ -31,6 +31,10 @@ import (
 //go:embed test_png.png
 var testPNGFile []byte
 
+const canonicalTestSVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 58 58"><rect width="58" height="58"/></svg>`
+
+var httpClient = &http.Client{}
+
 type roundTripFunc func(req *http.Request) *http.Response
 
 func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -38,7 +42,12 @@ func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 }
 
 func bundleRemoteForTest(ctx context.Context, l simplelog.Logger, in []byte, cacheImages bool) ([]byte, error) {
-	return BundleRemoteWithPolicy(ctx, l, in, cacheImages, netpolicy.Policy{AllowPrivateNetworks: true})
+	resolver, err := newLegacyResolver("", localfile.Policy{}, httpClient, netpolicy.Policy{AllowPrivateNetworks: true}, cacheImages)
+	if err != nil {
+		return in, err
+	}
+	defer resolver.CloseIdleConnections()
+	return BundleWithResolver(ctx, l, in, BundleOptions{Resolver: resolver, Remote: true})
 }
 
 func TestRegex(t *testing.T) {
@@ -63,7 +72,6 @@ func TestRegex(t *testing.T) {
 }
 
 func TestInlineRemote(t *testing.T) {
-	imgCache = newImageCache(maxImageCacheEntries, maxImageCacheBytes)
 	ctx := log.With(context.Background(), testlog.New(t))
 	svgURL := "https://icons.terrastruct.com/essentials/004-picture.svg"
 	pngURL := "https://cdn4.iconfinder.com/data/icons/smart-phones-technologies/512/android-phone.png"
@@ -100,6 +108,11 @@ width="328" height="587" viewBox="-100 -131 328 587"><style type="text/css">
 		switch req.URL.String() {
 		case svgURL:
 			respRecorder.WriteString(`<?xml version=\"1.0\" encoding=\"iso-8859-1\"?>\r\n<!-- Generator: Adobe Illustrator 19.0.0, SVG Export Plug-In . SVG Version: 6.00 Build 0)  -->\r\n<svg version=\"1.1\" id=\"Capa_1\" xmlns=\"http://www.w3.org/2000/svg\" xmlns:xlink=\"http://www.w3.org/1999/xlink\" x=\"0px\" y=\"0px\"\r\n\t viewBox=\"0 0 58 58\" style=\"enable-background:new 0 0 58 58;\" xml:space=\"preserve\">\r\n<rect x=\"1\" y=\"7\" style=\"fill:#C3E1ED;stroke:#E7ECED;stroke-width:2;stroke-miterlimit:10;\" width=\"56\" height=\"44\"/>\r\n<circle style=\"fill:#ED8A19;\" cx=\"16\" cy=\"17.569\" r=\"6.569\"/>\r\n<polygon style=\"fill:#1A9172;\" points=\"56,36.111 55,35 43,24 32.5,35.5 37.983,40.983 42,45 56,45 \"/>\r\n<polygon style=\"fill:#1A9172;\" points=\"2,49 26,49 21.983,44.983 11.017,34.017 2,41.956 \"/>\r\n<rect x=\"2\" y=\"45\" style=\"fill:#6B5B4B;\" width=\"54\" height=\"5\"/>\r\n<polygon style=\"fill:#25AE88;\" points=\"37.983,40.983 27.017,30.017 10,45 42,45 \"/>\r\n<g>\r\n</g>\r\n<g>\r\n</g>\r\n<g>\r\n</g>\r\n<g>\r\n</g>\r\n<g>\r\n</g>\r\n<g>\r\n</g>\r\n<g>\r\n</g>\r\n<g>\r\n</g>\r\n<g>\r\n</g>\r\n<g>\r\n</g>\r\n<g>\r\n</g>\r\n<g>\r\n</g>\r\n<g>\r\n</g>\r\n<g>\r\n</g>\r\n<g>\r\n</g>\r\n</svg>`)
+			// The historical fixture above contains literal escaped quotes and is
+			// not well-formed XML. Strict imageasset validation deliberately rejects
+			// it, so exercise bundling with a canonical supported SVG instead.
+			respRecorder.Body.Reset()
+			respRecorder.WriteString(canonicalTestSVG)
 		case pngURL:
 			respRecorder.Write(testPNGFile)
 		default:
@@ -124,8 +137,7 @@ width="328" height="587" viewBox="-100 -131 328 587"><style type="text/css">
 		t.Fatal("no png image inserted")
 	}
 
-	imgCache = newImageCache(maxImageCacheEntries, maxImageCacheBytes)
-	// Test almost too large response
+	// A response inside the byte ceiling must still be a supported valid image.
 	httpClient.Transport = roundTripFunc(func(req *http.Request) *http.Response {
 		respRecorder := httptest.NewRecorder()
 		bytes := make([]byte, maxImageSize)
@@ -135,11 +147,10 @@ width="328" height="587" viewBox="-100 -131 328 587"><style type="text/css">
 		return respRecorder.Result()
 	})
 	_, err = bundleRemoteForTest(ctx, l, []byte(sampleSVG), false)
-	if err != nil {
-		t.Fatal(err)
+	if err == nil {
+		t.Fatal("expected malformed or unsupported image error")
 	}
 
-	imgCache = newImageCache(maxImageCacheEntries, maxImageCacheBytes)
 	// Test too large response
 	httpClient.Transport = roundTripFunc(func(req *http.Request) *http.Response {
 		respRecorder := httptest.NewRecorder()
@@ -154,7 +165,6 @@ width="328" height="587" viewBox="-100 -131 328 587"><style type="text/css">
 		t.Fatal("expected error")
 	}
 
-	imgCache = newImageCache(maxImageCacheEntries, maxImageCacheBytes)
 	// Test error response
 	httpClient.Transport = roundTripFunc(func(req *http.Request) *http.Response {
 		respRecorder := httptest.NewRecorder()
@@ -168,7 +178,6 @@ width="328" height="587" viewBox="-100 -131 328 587"><style type="text/css">
 }
 
 func TestInlineLocal(t *testing.T) {
-	imgCache = newImageCache(maxImageCacheEntries, maxImageCacheBytes)
 	ctx := log.With(context.Background(), testlog.New(t))
 	svgURL, err := filepath.Abs("./test_svg.svg")
 	if err != nil {
@@ -267,7 +276,6 @@ width="328" height="587" viewBox="-100 -131 328 587"><style type="text/css">
 
 // TestDuplicateURL ensures that we don't fetch the same image twice
 func TestDuplicateURL(t *testing.T) {
-	imgCache = newImageCache(maxImageCacheEntries, maxImageCacheBytes)
 	ctx := log.With(context.Background(), testlog.New(t))
 	url1 := "https://icons.terrastruct.com/essentials/004-picture.svg"
 	url2 := "https://icons.terrastruct.com/essentials/004-picture.svg"
@@ -306,6 +314,8 @@ width="328" height="587" viewBox="-100 -131 328 587"><style type="text/css">
 		respRecorder := httptest.NewRecorder()
 		respRecorder.WriteString(`<?xml version=\"1.0\" encoding=\"iso-8859-1\"?>\r\n<!-- Generator: Adobe Illustrator 19.0.0, SVG Export Plug-In . SVG Version: 6.00 Build 0)  -->\r\n<svg version=\"1.1\" id=\"Capa_1\" xmlns=\"http://www.w3.org/2000/svg\" xmlns:xlink=\"http://www.w3.org/1999/xlink\" x=\"0px\" y=\"0px\"\r\n\t viewBox=\"0 0 58 58\" style=\"enable-background:new 0 0 58 58;\" xml:space=\"preserve\">\r\n<rect x=\"1\" y=\"7\" style=\"fill:#C3E1ED;stroke:#E7ECED;stroke-width:2;stroke-miterlimit:10;\" width=\"56\" height=\"44\"/>\r\n<circle style=\"fill:#ED8A19;\" cx=\"16\" cy=\"17.569\" r=\"6.569\"/>\r\n<polygon style=\"fill:#1A9172;\" points=\"56,36.111 55,35 43,24 32.5,35.5 37.983,40.983 42,45 56,45 \"/>\r\n<polygon style=\"fill:#1A9172;\" points=\"2,49 26,49 21.983,44.983 11.017,34.017 2,41.956 \"/>\r\n<rect x=\"2\" y=\"45\" style=\"fill:#6B5B4B;\" width=\"54\" height=\"5\"/>\r\n<polygon style=\"fill:#25AE88;\" points=\"37.983,40.983 27.017,30.017 10,45 42,45 \"/>\r\n<g>\r\n</g>\r\n<g>\r\n</g>\r\n<g>\r\n</g>\r\n<g>\r\n</g>\r\n<g>\r\n</g>\r\n<g>\r\n</g>\r\n<g>\r\n</g>\r\n<g>\r\n</g>\r\n<g>\r\n</g>\r\n<g>\r\n</g>\r\n<g>\r\n</g>\r\n<g>\r\n</g>\r\n<g>\r\n</g>\r\n<g>\r\n</g>\r\n<g>\r\n</g>\r\n</svg>`)
 		respRecorder.WriteHeader(200)
+		respRecorder.Body.Reset()
+		respRecorder.WriteString(canonicalTestSVG)
 		return respRecorder.Result()
 	})
 
@@ -322,7 +332,6 @@ width="328" height="587" viewBox="-100 -131 328 587"><style type="text/css">
 }
 
 func TestInlineRemoteCompressedSVG(t *testing.T) {
-	imgCache = newImageCache(maxImageCacheEntries, maxImageCacheBytes)
 	ctx := log.With(context.Background(), testlog.New(t))
 	svgURL := "https://icons.terrastruct.com/essentials/004-picture.svg"
 	rawSVG := []byte(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><rect width="10" height="10"/></svg>`)
@@ -452,11 +461,10 @@ func TestInlineRemoteContentTypeIsSafeAndCanonical(t *testing.T) {
 			name:        "XML-sensitive subtype",
 			contentType: "image/x&y",
 			body:        testPNGFile,
-			wantType:    "image/x&y",
+			wantType:    "image/png",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			imgCache = newImageCache(maxImageCacheEntries, maxImageCacheBytes)
 			httpClient.Transport = roundTripFunc(func(req *http.Request) *http.Response {
 				if req.URL.String() != imageURL {
 					t.Fatalf("unexpected URL %s", req.URL)
@@ -510,8 +518,7 @@ func assertBundledImageHref(t *testing.T, source []byte, wantHref string) {
 	}
 }
 
-func TestImgCache(t *testing.T) {
-	imgCache = newImageCache(maxImageCacheEntries, maxImageCacheBytes)
+func TestDeprecatedWrapperCacheIsDocumentScoped(t *testing.T) {
 	ctx := log.With(context.Background(), testlog.New(t))
 	url1 := "https://icons.terrastruct.com/essentials/004-picture.svg"
 	url2 := "https://icons.terrastruct.com/essentials/004-picture.svg"
@@ -550,11 +557,14 @@ width="328" height="587" viewBox="-100 -131 328 587"><style type="text/css">
 		respRecorder := httptest.NewRecorder()
 		respRecorder.WriteString(`<?xml version=\"1.0\" encoding=\"iso-8859-1\"?>\r\n<!-- Generator: Adobe Illustrator 19.0.0, SVG Export Plug-In . SVG Version: 6.00 Build 0)  -->\r\n<svg version=\"1.1\" id=\"Capa_1\" xmlns=\"http://www.w3.org/2000/svg\" xmlns:xlink=\"http://www.w3.org/1999/xlink\" x=\"0px\" y=\"0px\"\r\n\t viewBox=\"0 0 58 58\" style=\"enable-background:new 0 0 58 58;\" xml:space=\"preserve\">\r\n<rect x=\"1\" y=\"7\" style=\"fill:#C3E1ED;stroke:#E7ECED;stroke-width:2;stroke-miterlimit:10;\" width=\"56\" height=\"44\"/>\r\n<circle style=\"fill:#ED8A19;\" cx=\"16\" cy=\"17.569\" r=\"6.569\"/>\r\n<polygon style=\"fill:#1A9172;\" points=\"56,36.111 55,35 43,24 32.5,35.5 37.983,40.983 42,45 56,45 \"/>\r\n<polygon style=\"fill:#1A9172;\" points=\"2,49 26,49 21.983,44.983 11.017,34.017 2,41.956 \"/>\r\n<rect x=\"2\" y=\"45\" style=\"fill:#6B5B4B;\" width=\"54\" height=\"5\"/>\r\n<polygon style=\"fill:#25AE88;\" points=\"37.983,40.983 27.017,30.017 10,45 42,45 \"/>\r\n<g>\r\n</g>\r\n<g>\r\n</g>\r\n<g>\r\n</g>\r\n<g>\r\n</g>\r\n<g>\r\n</g>\r\n<g>\r\n</g>\r\n<g>\r\n</g>\r\n<g>\r\n</g>\r\n<g>\r\n</g>\r\n<g>\r\n</g>\r\n<g>\r\n</g>\r\n<g>\r\n</g>\r\n<g>\r\n</g>\r\n<g>\r\n</g>\r\n<g>\r\n</g>\r\n</svg>`)
 		respRecorder.WriteHeader(200)
+		respRecorder.Body.Reset()
+		respRecorder.WriteString(canonicalTestSVG)
 		return respRecorder.Result()
 	})
 
 	l := simplelog.FromLibLog(ctx)
-	// Using a cache, imgs are not refetched on multiple runs
+	// Deprecated wrappers retain the cacheImages parameter for source
+	// compatibility, but cache state cannot escape one document invocation.
 	_, err := bundleRemoteForTest(ctx, l, []byte(sampleSVG), true)
 	if err != nil {
 		t.Fatal(err)
@@ -563,7 +573,7 @@ width="328" height="587" viewBox="-100 -131 328 587"><style type="text/css">
 	if err != nil {
 		t.Fatal(err)
 	}
-	tassert.Equal(t, 1, count)
+	tassert.Equal(t, 2, count)
 
 	// With cache disabled, it refetches
 	count = 0

@@ -19,6 +19,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sync"
 )
 
 // ErrDenied reports that a policy does not permit a local-file path.
@@ -41,8 +42,16 @@ const (
 type Policy struct {
 	mode       policyMode
 	rootPath   string
-	root       *os.Root
+	root       *rootState
 	cacheScope [32]byte
+}
+
+// rootState makes Policy copies share exactly one close operation. Policy is a
+// value type and is commonly copied into compiler and asset resolver options.
+type rootState struct {
+	handle *os.Root
+	once   sync.Once
+	err    error
 }
 
 // Rooted returns a policy that permits files at or beneath root. Opens use
@@ -65,7 +74,7 @@ func Rooted(root string) (Policy, error) {
 			closeRoot(handle, root),
 		)
 	}
-	return Policy{mode: modeRooted, rootPath: absolute, root: handle, cacheScope: cacheScope}, nil
+	return Policy{mode: modeRooted, rootPath: absolute, root: &rootState{handle: handle}, cacheScope: cacheScope}, nil
 }
 
 // Unrestricted returns a policy that permits arbitrary host-filesystem reads.
@@ -78,6 +87,20 @@ func Unrestricted() Policy {
 // It returns an empty string and false for denied and unrestricted policies.
 func (p Policy) RootPath() (string, bool) {
 	return p.rootPath, p.mode == modeRooted
+}
+
+// Close releases the retained OS root handle. Copies of a rooted Policy share
+// one copy-safe close operation and return the same close result. It does not
+// erase or revoke immutable resources that callers already retained in their
+// own caches. Closing a denied or unrestricted policy is a no-op.
+func (p Policy) Close() error {
+	if p.mode != modeRooted || p.root == nil {
+		return nil
+	}
+	p.root.once.Do(func() {
+		p.root.err = closeRoot(p.root.handle, p.rootPath)
+	})
+	return p.root.err
 }
 
 // CacheKey returns a policy-scoped, canonical key for name. It rejects names
@@ -118,10 +141,10 @@ func (p Policy) Open(name string) (fs.File, error) {
 		return requireRegular(name, file)
 	}
 
-	if p.root == nil {
+	if p.root == nil || p.root.handle == nil {
 		return nil, errors.New("localfile: invalid rooted policy")
 	}
-	file, err := openFileInRoot(p.root, resolved.relative)
+	file, err := openFileInRoot(p.root.handle, resolved.relative)
 	if err != nil {
 		return nil, fmt.Errorf("localfile: open %q beneath root %q: %w", name, p.rootPath, err)
 	}

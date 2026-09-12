@@ -25,6 +25,7 @@ func TestTrackedFSHonorsLocalFilePolicy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = rooted.Close() })
 	tracked := trackedFS{localFiles: rooted}
 	file, err := tracked.Open(inside)
 	if err != nil {
