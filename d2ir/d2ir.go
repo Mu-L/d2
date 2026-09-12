@@ -171,8 +171,11 @@ func (s *Scalar) Equal(n2 Node) bool {
 type Map struct {
 	parent    Node
 	importAST d2ast.Node
-	Fields    []*Field `json:"fields"`
-	Edges     []*Edge  `json:"edges"`
+	// variableExpansion is shared across automatic copies created during one
+	// compilation. It is intentionally omitted from JSON output.
+	variableExpansion *variableExpansionBudget
+	Fields            []*Field `json:"fields"`
+	Edges             []*Edge  `json:"edges"`
 
 	globs []*globContext
 
@@ -422,6 +425,10 @@ func (m *Map) SetImportAST(node d2ast.Node) {
 }
 
 func (m *Map) Copy(newParent Node) Node {
+	var variableExpansion *variableExpansionBudget
+	if newParent == nil {
+		variableExpansion = variableExpansionBudgetFor(m)
+	}
 	tmp := *m
 	m = &tmp
 	m.fieldIndex = nil
@@ -441,6 +448,7 @@ func (m *Map) Copy(newParent Node) Node {
 		m.Edges[i] = m.Edges[i].Copy(m).(*Edge)
 	}
 	if m.parent == nil {
+		m.variableExpansion = variableExpansion
 		m.initRoot()
 	}
 	return m
@@ -1643,6 +1651,9 @@ func (m *Map) createEdgeForCompile(eid *EdgeID, refctx *RefContext, c *compiler)
 }
 
 func (m *Map) createEdgeMode(eid *EdgeID, refctx *RefContext, c *compiler, indexed bool) ([]*Edge, error) {
+	if c != nil && c.stopped() {
+		return nil, nil
+	}
 	var ea []*Edge
 	var gctx *globContext
 	if refctx != nil && refctx.Key.HasGlob() && c != nil {
@@ -1651,6 +1662,9 @@ func (m *Map) createEdgeMode(eid *EdgeID, refctx *RefContext, c *compiler, index
 	err := m.createEdge(eid, refctx, gctx, c, indexed, &ea)
 	if len(ea) > 0 && c != nil && len(c.globRefContextStack) == 0 {
 		for _, gctx2 := range c.globContexts() {
+			if c.stopped() {
+				return nil, nil
+			}
 			old := c.lazyGlobBeingApplied
 			c.lazyGlobBeingApplied = true
 			c.compileKey(gctx2.refctx)
@@ -1661,6 +1675,9 @@ func (m *Map) createEdgeMode(eid *EdgeID, refctx *RefContext, c *compiler, index
 }
 
 func (m *Map) createEdge(eid *EdgeID, refctx *RefContext, gctx *globContext, c *compiler, indexed bool, ea *[]*Edge) error {
+	if c != nil && c.stopped() {
+		return nil
+	}
 	if ParentEdge(m) != nil {
 		return d2parser.Errorf(refctx.Edge, "cannot create edge inside edge")
 	}
@@ -1686,6 +1703,9 @@ func (m *Map) createEdge(eid *EdgeID, refctx *RefContext, gctx *globContext, c *
 			return err
 		}
 		for _, f := range fa {
+			if c != nil && c.stopped() {
+				return nil
+			}
 			if _, ok := f.Composite.(*Array); ok {
 				return d2parser.Errorf(refctx.Edge.Src, "cannot index into array")
 			}
@@ -1731,6 +1751,9 @@ func (m *Map) createEdge(eid *EdgeID, refctx *RefContext, gctx *globContext, c *
 
 	for _, src := range srcFA {
 		for _, dst := range dstFA {
+			if c != nil && c.stopped() {
+				return nil
+			}
 			if src == dst && (refctx.Edge.Src.HasGlob() || refctx.Edge.Dst.HasGlob()) {
 				// Globs do not make self edges.
 				continue
@@ -1741,6 +1764,9 @@ func (m *Map) createEdge(eid *EdgeID, refctx *RefContext, gctx *globContext, c *
 				if c.IsContainer(src.Map()) {
 					continue
 				}
+				if c.stopped() {
+					return nil
+				}
 				if NodeBoardKind(src) != "" || ParentBoard(src) != ParentBoard(dst) {
 					continue
 				}
@@ -1749,6 +1775,9 @@ func (m *Map) createEdge(eid *EdgeID, refctx *RefContext, gctx *globContext, c *
 				// If dst has a double glob we only select leafs, those without children.
 				if c.IsContainer(dst.Map()) {
 					continue
+				}
+				if c.stopped() {
+					return nil
 				}
 				if NodeBoardKind(dst) != "" || ParentBoard(src) != ParentBoard(dst) {
 					continue

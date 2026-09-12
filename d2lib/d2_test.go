@@ -28,6 +28,15 @@ func TestParseAndCompileHonorCanceledContext(t *testing.T) {
 	}
 }
 
+func TestCompilePropagatesVariableExpansionLimit(t *testing.T) {
+	_, _, err := Compile(context.Background(), "vars: {x: 12345678}\nout: ${x}${x}${x}${x}${x}", &CompileOptions{
+		MaxVariableExpansion: 32,
+	}, nil)
+	if err == nil || !strings.Contains(err.Error(), "variable substitution expansion exceeds limit of 32 work units") {
+		t.Fatalf("Compile() error = %v, want variable expansion limit", err)
+	}
+}
+
 func TestNilFSDeniesImports(t *testing.T) {
 	directory := t.TempDir()
 	if err := os.WriteFile(filepath.Join(directory, "secret.d2"), []byte("disclosed"), 0o600); err != nil {

@@ -37,6 +37,11 @@
   - Limit active import chains to 128. [#2904](https://github.com/d2lang/d2/pull/2904)
   - Reject cyclic composite variables with source diagnostics instead of allowing
     unbounded recursion. [#2907](https://github.com/d2lang/d2/pull/2907)
+  - Limit variable substitution output and automatic board, import, and class
+    copies to a 65,536-unit compilation budget by default; Go callers can
+    configure the limit. [#2923](https://github.com/d2lang/d2/pull/2923)
+  - Honor cancellation while expanding substitutions and materializing compiled
+    graphs. [#2923](https://github.com/d2lang/d2/pull/2923)
 - decoding and assets:
   - Cap decompressed URL-encoded D2 input at 16 MiB. [#2902](https://github.com/d2lang/d2/pull/2902)
   - Bound image references, locators, fetched and decoded bytes, cached data, and
