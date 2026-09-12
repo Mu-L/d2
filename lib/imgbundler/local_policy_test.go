@@ -36,6 +36,7 @@ func TestBundleLocalRootedPolicy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = policy.Close() })
 	ctx := localPolicyContext(t)
 	logger := localPolicyLogger(t)
 	output, err := BundleLocalWithPolicy(ctx, logger, filepath.Join(root, "input.d2"), localPolicySVG("inside.svg"), policy, false)
@@ -69,6 +70,7 @@ func TestBundleLocalRootedPolicyRejectsSymlinkEscape(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = policy.Close() })
 	_, err = BundleLocalWithPolicy(localPolicyContext(t), localPolicyLogger(t), filepath.Join(root, "input.d2"), localPolicySVG("escape.svg"), policy, false)
 	if err == nil {
 		t.Fatal("rooted policy followed an escaping symlink")
@@ -92,6 +94,7 @@ func TestBundleLocalCacheDoesNotCrossRootReplacement(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = firstPolicy.Close() })
 	ctx := localPolicyContext(t)
 	logger := simplelog.FromLibLog(ctx)
 	inputPath := filepath.Join(root, "input.d2")
@@ -110,6 +113,7 @@ func TestBundleLocalCacheDoesNotCrossRootReplacement(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = secondPolicy.Close() })
 	output, err := BundleLocalWithPolicy(ctx, logger, inputPath, localPolicySVG("asset.svg"), secondPolicy, true)
 	if err != nil {
 		t.Fatal(err)
@@ -154,7 +158,6 @@ func writeLocalPolicyImage(t *testing.T, directory, name, contents string) strin
 
 func localPolicyContext(t *testing.T) context.Context {
 	t.Helper()
-	imgCache = newImageCache(maxImageCacheEntries, maxImageCacheBytes)
 	return log.With(context.Background(), testlog.New(t))
 }
 

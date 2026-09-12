@@ -1158,8 +1158,8 @@ bank.Equities.app14522 -> bank.Fixed Income.app14500: security reference
 			run: func(t *testing.T, ctx context.Context, dir string, env *xos.Env) {
 				writeFile(t, dir, "hello-world.d2", `...@asdf/x`)
 				writeFile(t, filepath.Join(dir, "asdf"), "x.d2", `y: { icon: ./blah.svg }; z: { icon: ../root.svg }`)
-				writeFile(t, filepath.Join(dir, "asdf"), "blah.svg", ``)
-				writeFile(t, dir, "root.svg", ``)
+				writeFile(t, filepath.Join(dir, "asdf"), "blah.svg", `<svg xmlns="http://www.w3.org/2000/svg"></svg>`)
+				writeFile(t, dir, "root.svg", `<svg xmlns="http://www.w3.org/2000/svg"></svg>`)
 				err := runTestMain(t, ctx, dir, env, filepath.Join(dir, "hello-world.d2"))
 				assert.Success(t, err)
 				svg := readFile(t, dir, "hello-world.svg")

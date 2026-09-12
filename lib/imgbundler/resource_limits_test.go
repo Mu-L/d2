@@ -3,6 +3,8 @@ package imgbundler
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -13,6 +15,7 @@ import (
 	"testing"
 
 	"github.com/d2lang/d2/internal/testlog"
+	"github.com/d2lang/d2/lib/imageasset"
 	"github.com/d2lang/d2/lib/localfile"
 	"github.com/d2lang/d2/lib/log"
 	"github.com/d2lang/d2/lib/netpolicy"
@@ -28,7 +31,7 @@ func TestBundleCapsImageReferences(t *testing.T) {
 	makeSource := func(references int) []byte {
 		var source strings.Builder
 		source.WriteString(`<svg xmlns="http://www.w3.org/2000/svg">`)
-		for i := 0; i < references; i++ {
+		for range references {
 			fmt.Fprintf(&source, `<image href="%s"/>`, imagePath)
 		}
 		source.WriteString(`</svg>`)
@@ -40,18 +43,9 @@ func TestBundleCapsImageReferences(t *testing.T) {
 		t.Fatalf("inclusive reference limit failed: %v", err)
 	}
 	_, err := BundleLocalWithPolicy(ctx, simplelog.FromLibLog(ctx), "-", makeSource(maxImageReferences+1), localfile.Unrestricted(), false)
-	if err == nil {
-		t.Fatal("BundleLocal accepted more than 4,096 image references")
+	if err == nil || !strings.Contains(err.Error(), "image references exceed maximum of 4096") {
+		t.Fatalf("reference-limit error = %v", err)
 	}
-	if !strings.Contains(err.Error(), "image references exceed maximum of 4096") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func imageCacheStats(cache *imageCache) (entries int, bytes int64) {
-	cache.mu.Lock()
-	defer cache.mu.Unlock()
-	return len(cache.entries), cache.bytes
 }
 
 func TestApplyReplacementsCapsOutputAndHandlesDuplicates(t *testing.T) {
@@ -73,14 +67,23 @@ func TestApplyReplacementsCapsOutputAndHandlesDuplicates(t *testing.T) {
 	if !bytes.Equal(output, want) {
 		t.Fatalf("unexpected output:\n%s\nwant:\n%s", output, want)
 	}
-	_, err = applyReplacements(context.Background(), source, matches, map[string][]byte{"same": replacement}, int64(len(want)-1))
+	limited, err := applyReplacements(context.Background(), source, matches, map[string][]byte{"same": replacement}, int64(len(want)-1))
 	if err == nil || !strings.Contains(err.Error(), "bundled SVG output exceeds maximum") {
 		t.Fatalf("expected output limit error, got %v", err)
+	}
+	if !bytes.Equal(limited, source) {
+		t.Fatalf("output-limit failure returned invalid partial output: %s", limited)
+	}
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	canceledOutput, err := applyReplacements(canceled, source, matches, map[string][]byte{"same": replacement}, int64(len(want)))
+	if !errors.Is(err, context.Canceled) || !bytes.Equal(canceledOutput, source) {
+		t.Fatalf("canceled apply = %q / %v, want original / context.Canceled", canceledOutput, err)
 	}
 }
 
 func TestBundleBudgetIsCumulativeAndSticky(t *testing.T) {
-	budget := &bundleBudget{maxFetchedBytes: 6, maxSourceBytes: 6, maxBundledBytes: 6}
+	budget := &bundleBudget{maxBundledBytes: 6}
 	if err := budget.reserveBundled(4); err != nil {
 		t.Fatal(err)
 	}
@@ -90,47 +93,96 @@ func TestBundleBudgetIsCumulativeAndSticky(t *testing.T) {
 	if err := budget.reserveBundled(2); err == nil {
 		t.Fatal("budget continued after its first limit error")
 	}
-	if err := budget.reserveSource(1); err == nil {
-		t.Fatal("one exhausted dimension did not stop the operation")
-	}
 }
 
-func TestRunWorkersEnforcesCumulativeBundleBudget(t *testing.T) {
-	imagePath := filepath.Join(t.TempDir(), "image.svg")
-	if err := os.WriteFile(imagePath, []byte(`<svg/>`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	source := localPolicySVG(imagePath)
-	matches, hrefs, err := findImageElements(context.Background(), source, false)
+func TestResolveReplacementEnforcesCumulativeBundleBudget(t *testing.T) {
+	resolver, err := imageasset.New(imageasset.Options{Limits: testResolverLimits()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, tc := range []struct {
-		name        string
-		budget      *bundleBudget
-		wantMessage string
-	}{
-		{name: "fetched bytes", budget: &bundleBudget{maxFetchedBytes: 1, maxSourceBytes: 1 << 20, maxBundledBytes: 1 << 20}, wantMessage: "cumulative fetched image bytes exceeds maximum"},
-		{name: "source bytes", budget: &bundleBudget{maxFetchedBytes: 1 << 20, maxSourceBytes: 1, maxBundledBytes: 1 << 20}, wantMessage: "cumulative source image bytes exceeds maximum"},
-		{name: "bundled bytes", budget: &bundleBudget{maxFetchedBytes: 1 << 20, maxSourceBytes: 1 << 20, maxBundledBytes: 1}, wantMessage: "cumulative bundled image bytes exceeds maximum"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			ctx := log.With(context.Background(), testlog.New(t))
-			output, err := runWorkers(ctx, simplelog.FromLibLog(ctx), "-", source, matches, hrefs, localfile.Unrestricted(), false, false, nil, netpolicy.Policy{}, tc.budget)
-			if err == nil || !strings.Contains(err.Error(), tc.wantMessage) {
-				t.Fatalf("expected cumulative byte limit error, got %v", err)
-			}
-			if !bytes.Equal(output, source) {
-				t.Fatal("failed resource changed output")
-			}
-		})
+	href := "data:image/png;base64," + base64.StdEncoding.EncodeToString(testPNGFile)
+	resource, err := resolver.Resolve(context.Background(), href)
+	if err != nil {
+		t.Fatal(err)
+	}
+	uri, err := resource.DataURIContext(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	replacementBytes := int64(len(`<image href="`) + len(uri) + 1)
+	if _, err := resolveReplacement(context.Background(), resolver, href, &bundleBudget{maxBundledBytes: replacementBytes - 1}); err == nil || !strings.Contains(err.Error(), "cumulative bundled image bytes") {
+		t.Fatalf("bundle-budget error = %v", err)
 	}
 }
 
-func TestAggregateLimitStopsSchedulingNewFetches(t *testing.T) {
+func TestBundleWithResolverCombinesLocalAndRemoteReferences(t *testing.T) {
+	directory := t.TempDir()
+	localPath := filepath.Join(directory, "local.png")
+	if err := os.WriteFile(localPath, testPNGFile, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var requests atomic.Int32
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) *http.Response {
+		requests.Add(1)
+		if req.URL.String() != "https://example.com/remote.png" {
+			t.Fatalf("unexpected URL %s", req.URL)
+		}
+		response := httptest.NewRecorder()
+		response.Header().Set("Content-Type", "image/png")
+		response.WriteHeader(http.StatusOK)
+		_, _ = response.Write(testPNGFile)
+		return response.Result()
+	})}
+	resolver, err := imageasset.New(imageasset.Options{
+		BaseDir: directory, LocalFiles: localfile.Unrestricted(), HTTPClient: client,
+		NetworkPolicy: netpolicy.Policy{AllowPrivateNetworks: true}, Limits: testResolverLimits(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resolver.CloseIdleConnections()
+	source := []byte(`<svg><image href="local.png"/><image href="https://example.com/remote.png"/></svg>`)
+	ctx := log.With(context.Background(), testlog.New(t))
+	output, err := BundleWithResolver(ctx, simplelog.FromLibLog(ctx), source, BundleOptions{
+		Resolver: resolver, Local: true, Remote: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if requests.Load() != 1 || strings.Count(string(output), "data:image/png;base64,") != 2 {
+		t.Fatalf("requests = %d, output = %s", requests.Load(), output)
+	}
+}
+
+func TestBundleWithResolverRejectsUnsupportedFormats(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(_ *http.Request) *http.Response {
+		response := httptest.NewRecorder()
+		response.Header().Set("Content-Type", "image/avif")
+		response.WriteHeader(http.StatusOK)
+		_, _ = response.WriteString("not one of the five supported image formats")
+		return response.Result()
+	})}
+	resolver, err := imageasset.New(imageasset.Options{
+		HTTPClient: client, NetworkPolicy: netpolicy.Policy{AllowPrivateNetworks: true}, Limits: testResolverLimits(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := []byte(`<svg><image href="https://example.com/unsupported.avif"/></svg>`)
+	ctx := log.With(context.Background(), testlog.New(t))
+	output, err := BundleWithResolver(ctx, simplelog.FromLibLog(ctx), source, BundleOptions{Resolver: resolver, Remote: true})
+	if err == nil || !strings.Contains(err.Error(), "unsupported or malformed image") {
+		t.Fatalf("unsupported-format error = %v", err)
+	}
+	if !bytes.Equal(output, source) {
+		t.Fatalf("failed unsupported resource changed output: %s", output)
+	}
+}
+
+func TestResolutionFailureStopsSchedulingNewFetches(t *testing.T) {
 	var source strings.Builder
 	source.WriteString(`<svg>`)
-	for i := 0; i < 100; i++ {
+	for i := range 100 {
 		fmt.Fprintf(&source, `<image href="https://example.com/%d"/>`, i)
 	}
 	source.WriteString(`</svg>`)
@@ -145,87 +197,61 @@ func TestAggregateLimitStopsSchedulingNewFetches(t *testing.T) {
 		response := httptest.NewRecorder()
 		response.Header().Set("Content-Type", "image/png")
 		response.WriteHeader(http.StatusOK)
-		_, _ = response.WriteString("xx")
+		_, _ = response.WriteString("not a PNG")
 		return response.Result()
 	})}
-	ctx := log.With(context.Background(), testlog.New(t))
-	_, err = runWorkers(ctx, simplelog.FromLibLog(ctx), "-", sourceBytes, matches, hrefs, localfile.Policy{}, true, false, client, netpolicy.Policy{}, &bundleBudget{maxFetchedBytes: 1, maxSourceBytes: 1 << 20, maxBundledBytes: 1 << 20})
-	if err == nil || !strings.Contains(err.Error(), "cumulative fetched image bytes exceeds maximum") {
-		t.Fatalf("expected cumulative fetch limit error, got %v", err)
-	}
-	if got := requests.Load(); got > maxImageWorkers {
-		t.Fatalf("aggregate failure allowed %d requests, worker ceiling %d", got, maxImageWorkers)
-	}
-}
-
-func TestWorkerChargesCacheHitToBundleBudget(t *testing.T) {
-	previousCache := imgCache
-	imgCache = newImageCache(maxImageCacheEntries, maxImageCacheBytes)
-	t.Cleanup(func() { imgCache = previousCache })
-	href := "https://example.com/image.png"
-	value := []byte(`<image href="data:image/png;base64,AAAA"`)
-	imgCache.Store(imageCacheKey{href: href, isRemote: true}, value)
-
-	ctx := log.With(context.Background(), testlog.New(t))
-	_, err := worker(ctx, simplelog.FromLibLog(ctx), "", href, localfile.Policy{}, true, true, nil, netpolicy.Policy{}, &bundleBudget{maxFetchedBytes: 1, maxSourceBytes: 1, maxBundledBytes: int64(len(value) - 1)})
-	if err == nil || !strings.Contains(err.Error(), "cumulative bundled image bytes exceeds maximum") {
-		t.Fatalf("expected cached value to consume aggregate budget, got %v", err)
-	}
-	output, err := worker(ctx, simplelog.FromLibLog(ctx), "", href, localfile.Policy{}, true, true, nil, netpolicy.Policy{}, &bundleBudget{maxFetchedBytes: 1, maxSourceBytes: 1, maxBundledBytes: int64(len(value))})
+	resolver, err := imageasset.New(imageasset.Options{
+		HTTPClient: client, NetworkPolicy: netpolicy.Policy{AllowPrivateNetworks: true}, Limits: testResolverLimits(),
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Equal(output, value) {
-		t.Fatal("cache hit changed value")
+	ctx := log.With(context.Background(), testlog.New(t))
+	output, err := runResolverWorkers(ctx, simplelog.FromLibLog(ctx), sourceBytes, matches, hrefs, resolver, &bundleBudget{maxBundledBytes: 1 << 20})
+	if err == nil || !strings.Contains(err.Error(), "malformed") {
+		t.Fatalf("resolution error = %v", err)
+	}
+	if errors.Is(err, context.Canceled) {
+		t.Fatalf("first resolution failure was replaced by context cancellation: %v", err)
+	}
+	if !bytes.Equal(output, sourceBytes) {
+		t.Fatal("failed resources changed output")
+	}
+	if got := requests.Load(); got > maxImageWorkers {
+		t.Fatalf("failure allowed %d requests, worker ceiling %d", got, maxImageWorkers)
 	}
 }
 
-func TestImageCacheIsBoundedLRU(t *testing.T) {
-	cache := newImageCache(2, 1<<20)
-	first := imageCacheKey{href: "first"}
-	second := imageCacheKey{href: "second"}
-	third := imageCacheKey{href: "third"}
-	cache.Store(first, []byte("1"))
-	cache.Store(second, []byte("2"))
-	if _, ok := cache.Load(first); !ok {
-		t.Fatal("first cache entry unexpectedly missing")
+func TestResolutionFailurePreservesCompletedReplacements(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) *http.Response {
+		response := httptest.NewRecorder()
+		response.Header().Set("Content-Type", "image/png")
+		response.WriteHeader(http.StatusOK)
+		if strings.HasSuffix(req.URL.Path, "/good.png") {
+			_, _ = response.Write(testPNGFile)
+		} else {
+			_, _ = response.WriteString("not a PNG")
+		}
+		return response.Result()
+	})}
+	resolver, err := imageasset.New(imageasset.Options{
+		HTTPClient: client, NetworkPolicy: netpolicy.Policy{AllowPrivateNetworks: true}, Limits: testResolverLimits(),
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
-	cache.Store(third, []byte("3"))
-	if _, ok := cache.Load(second); ok {
-		t.Fatal("cache did not evict its least-recently-used entry")
+	source := []byte(`<svg><image href="https://example.com/good.png"/><image href="https://example.com/bad.png"/></svg>`)
+	matches, hrefs, err := findImageElements(context.Background(), source, true)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if entries, _ := imageCacheStats(cache); entries != 2 {
-		t.Fatalf("cache retained %d entries, want 2", entries)
+	ctx := log.With(context.Background(), testlog.New(t))
+	output, err := runResolverWorkersWithLimit(ctx, simplelog.FromLibLog(ctx), source, matches, hrefs, resolver, &bundleBudget{maxBundledBytes: 1 << 20}, 1)
+	if err == nil || !strings.Contains(err.Error(), "unsupported or malformed image") {
+		t.Fatalf("resolution error = %v", err)
 	}
-
-	entryBytes := imageCacheEntryBytes(first, []byte("1234"))
-	byteCache := newImageCache(2, entryBytes)
-	byteCache.Store(first, []byte("1234"))
-	other := imageCacheKey{href: "other"}
-	byteCache.Store(other, []byte("1234"))
-	entries, bytes := imageCacheStats(byteCache)
-	if entries != 1 || bytes > entryBytes {
-		t.Fatalf("byte-bounded cache retained %d entries and %d bytes", entries, bytes)
-	}
-	if _, ok := byteCache.Load(first); ok {
-		t.Fatal("byte-bounded cache did not evict its oldest entry")
-	}
-	if _, ok := byteCache.Load(other); !ok {
-		t.Fatal("byte-bounded cache did not retain the replacement entry")
-	}
-}
-
-func TestConfiguredImageCacheCapsEntries(t *testing.T) {
-	cache := newImageCache(maxImageCacheEntries, maxImageCacheBytes)
-	for i := 0; i < maxImageCacheEntries+1; i++ {
-		cache.Store(imageCacheKey{href: fmt.Sprintf("image-%d", i)}, []byte("x"))
-	}
-	entries, bytes := imageCacheStats(cache)
-	if entries != maxImageCacheEntries {
-		t.Fatalf("cache retained %d entries, want %d", entries, maxImageCacheEntries)
-	}
-	if bytes > maxImageCacheBytes {
-		t.Fatalf("cache retained %d bytes, limit %d", bytes, maxImageCacheBytes)
+	if !strings.Contains(string(output), "data:image/png;base64,") || !strings.Contains(string(output), `href="https://example.com/bad.png"`) {
+		t.Fatalf("completed replacement was not preserved alongside failed source: %s", output)
 	}
 }
 
@@ -262,5 +288,13 @@ func TestBundleCapsEligibleReferenceBytes(t *testing.T) {
 	_, err := BundleLocalWithPolicy(ctx, simplelog.FromLibLog(ctx), "-", source, localfile.Unrestricted(), false)
 	if err == nil || !strings.Contains(err.Error(), "image reference exceeds maximum") {
 		t.Fatalf("expected image-reference limit error, got %v", err)
+	}
+}
+
+func testResolverLimits() imageasset.Limits {
+	return imageasset.Limits{
+		MaxFetchedBytes: 1 << 20, MaxEncodedBytes: 1 << 20, MaxDecompressedBytes: 1 << 20, MaxSVGBytes: 1 << 20,
+		MaxDecodedWidth: 1_000, MaxDecodedHeight: 1_000, MaxDecodedPixels: 1_000_000,
+		MaxAssets: 1_000, MaxCumulativeEncodedBytes: 1 << 20, MaxCumulativeDecodedBytes: 8 << 20,
 	}
 }

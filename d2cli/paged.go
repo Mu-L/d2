@@ -53,6 +53,9 @@ func (r *pagedRenderer) close() {
 	}
 	r.pngEncoder.close()
 	r.workspace.Reset()
+	if r.assets != nil && r.assets.Resolver != nil {
+		r.assets.Resolver.CloseIdleConnections()
+	}
 }
 
 type pagedBoard struct {
