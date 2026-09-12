@@ -2,6 +2,8 @@
 
 #### Improvements 🧹
 
+- Centralize escaped SVG attribute and text serialization, encode unsafe local
+  IDs, and keep deprecated raw element fields only as checked compatibility boundaries.
 - SVG image bundling now uses the same document-scoped resolver as raster
   rendering, with shared local/network policy, caching, and cumulative resource
   budgets. Bundled images are strictly limited to valid PNG, JPEG, GIF, WebP,

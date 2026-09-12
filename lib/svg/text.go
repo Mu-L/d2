@@ -5,13 +5,7 @@ import (
 	"encoding/base32"
 	"encoding/xml"
 	"strings"
-)
-
-var xmlDoubleQuotedAttributeEscaper = strings.NewReplacer(
-	"&", "&amp;",
-	`"`, "&#34;",
-	"<", "&lt;",
-	">", "&gt;",
+	"unicode/utf8"
 )
 
 func EscapeText(text string) string {
@@ -22,8 +16,36 @@ func EscapeText(text string) string {
 
 // EscapeAttribute escapes a value for use in a double-quoted XML attribute.
 // Single quotes are left unchanged because they cannot terminate that context.
+// XML attribute whitespace is escaped so parsing preserves the original value.
 func EscapeAttribute(attribute string) string {
-	return xmlDoubleQuotedAttributeEscaper.Replace(attribute)
+	return strings.ReplaceAll(EscapeText(attribute), "&#39;", "'")
+}
+
+func validateXMLString(value string) {
+	if validXMLString(value) {
+		return
+	}
+	panic("invalid UTF-8 or character in XML value")
+}
+
+func validXMLString(value string) bool {
+	if !utf8.ValidString(value) {
+		return false
+	}
+	for _, r := range value {
+		if validXMLRune(r) {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func validXMLRune(r rune) bool {
+	return r == '\t' || r == '\n' || r == '\r' ||
+		r >= 0x20 && r <= 0xD7FF ||
+		r >= 0xE000 && r <= 0xFFFD ||
+		r >= 0x10000 && r <= 0x10FFFF
 }
 
 func SVGID(text string) string {
